@@ -1,4 +1,4 @@
--c requirements/ai-runtime-constraints.txt
+-c ai-runtime-constraints.txt
 openai
 litellm
 pydantic>=2.7.0

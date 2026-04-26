@@ -21,6 +21,7 @@ jobs:
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       AI_TASK: ai_requirements_excel
+      AI_PYTHON_VERSION: ${{ vars.AI_PYTHON_VERSION }}
 
     steps:
       - name: Checkout repository
@@ -28,35 +29,75 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify Python
+      - name: Verify Python launcher
         shell: powershell
         run: |
+          $ErrorActionPreference = "Stop"
+
           python --version
           python -c "import sys; print(sys.executable)"
+
+          if (Get-Command py -ErrorAction SilentlyContinue) {
+            py --list
+          } else {
+            Write-Host "Python launcher 'py' not found. The workflow will use 'python'."
+          }
 
       - name: Create clean venv
         shell: powershell
         run: |
+          $ErrorActionPreference = "Stop"
+
           if (Test-Path ".venv") {
             Remove-Item -Recurse -Force ".venv"
           }
-          python -m venv .venv
+
+          $pythonVersion = ($env:AI_PYTHON_VERSION + "").Trim()
+
+          if (-not [string]::IsNullOrWhiteSpace($pythonVersion) -and (Get-Command py -ErrorAction SilentlyContinue)) {
+            Write-Host "Creating venv with Python $pythonVersion via Python launcher."
+            py -$pythonVersion -m venv .venv
+          } else {
+            Write-Host "Creating venv with default python from PATH."
+            python -m venv .venv
+          }
+
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
           .\.venv\Scripts\python.exe --version
+          .\.venv\Scripts\python.exe -c "import sys; print(sys.executable)"
 
       - name: Install dependencies
         shell: powershell
         env:
           PYTHONNOUSERSITE: "1"
         run: |
+          $ErrorActionPreference = "Stop"
+
           .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
           .\.venv\Scripts\python.exe -m pip install --no-cache-dir --force-reinstall -r requirements/ai-runtime.txt
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
           .\.venv\Scripts\python.exe -m pip check
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Verify AI imports
         shell: powershell
         env:
           PYTHONNOUSERSITE: "1"
         run: |
+          $ErrorActionPreference = "Stop"
+
           $py = @'
           import sys
           import importlib.util
@@ -73,27 +114,37 @@ jobs:
           if importlib.util.find_spec("openai._models") is None:
               raise SystemExit("openai._models is not importable in this venv")
           '@
+
           $py | .\.venv\Scripts\python.exe -
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Resolve AI config
         shell: powershell
         env:
           PYTHONNOUSERSITE: "1"
         run: |
+          $ErrorActionPreference = "Stop"
+
           .\.venv\Scripts\python.exe scripts/resolve_ai_config.py --task "$env:AI_TASK" --github-env "$env:GITHUB_ENV"
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Verify resolved AI endpoint
         shell: powershell
         env:
           PYTHONNOUSERSITE: "1"
         run: |
+          $ErrorActionPreference = "Stop"
+
           if ([string]::IsNullOrWhiteSpace($env:AI_API_BASE)) {
             throw "AI_API_BASE is empty after config resolution."
           }
 
           $modelsUrl = $env:AI_API_BASE.TrimEnd('/') + "/models"
-          Write-Host "Resolved AI_API_BASE: $env:AI_API_BASE"
-          Write-Host "Testing models endpoint: $modelsUrl"
+          Write-Host "Testing AI endpoint from resolved configuration."
 
           $headers = @{}
           if (-not [string]::IsNullOrWhiteSpace($env:OPENAI_API_KEY)) {
@@ -105,7 +156,10 @@ jobs:
       - name: Prepare data dir
         shell: powershell
         run: |
+          $ErrorActionPreference = "Stop"
+
           New-Item -ItemType Directory -Force -Path C:\mnt\data | Out-Null
+
           if (Test-Path "C:\mnt\data\security_audit_requirements.xlsx") {
             Remove-Item -Force "C:\mnt\data\security_audit_requirements.xlsx"
           }
@@ -121,12 +175,15 @@ jobs:
         env:
           PYTHONNOUSERSITE: "1"
         run: |
+          $ErrorActionPreference = "Stop"
+
           if (-not (Test-Path "requirements/requisites.json")) {
             throw "requirements/requisites.json not found"
           }
 
           $py = @'
-          import json, sys
+          import json
+          import sys
           from pathlib import Path
 
           src = Path("requirements/requisites.json")
@@ -134,10 +191,12 @@ jobs:
 
           raw = src.read_text(encoding="utf-8", errors="replace")
           s = raw.lstrip()
+
           if s.startswith("{{"):
               raw = raw.replace("{{", "{", 1)
 
           data = json.loads(raw)
+
           if isinstance(data, dict) and isinstance(data.get("requirements"), list):
               data = data["requirements"]
 
@@ -147,7 +206,11 @@ jobs:
 
           dst.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
           '@
+
           $py | .\.venv\Scripts\python.exe -
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
           if (Test-Path "_vision360_bundle/vision360_fingerprint.json") {
             Copy-Item "_vision360_bundle/vision360_fingerprint.json" "C:\mnt\data\vision360_fingerprint.json" -Force
@@ -167,7 +230,13 @@ jobs:
           PYTHONNOUSERSITE: "1"
         shell: powershell
         run: |
+          $ErrorActionPreference = "Stop"
+
           .\.venv\Scripts\python.exe scripts/ai_security_audit_requirements_excel.py
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
           if (-not (Test-Path "C:\mnt\data\security_audit_requirements.xlsx")) {
             throw "security_audit_requirements.xlsx was not created"
           }
