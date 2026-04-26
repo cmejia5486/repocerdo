@@ -451,6 +451,10 @@ def translate_texts_to_english_via_openai(items: List[Dict[str, str]]) -> Dict[s
 def generate_justifications_via_openai(batch_ctx: List[Dict[str, Any]]) -> Dict[str, str]:
     client = openai_client()
     if client is None or BaseModel is None:
+        print(
+            "[AI] AI runtime unavailable for justifications; deterministic fallback will be used.",
+            flush=True,
+        )
         return {}
 
     model = os.getenv("OPENAI_MODEL", "gpt-5.4").strip() or "gpt-5.4"
@@ -466,36 +470,67 @@ def generate_justifications_via_openai(batch_ctx: List[Dict[str, Any]]) -> Dict[
         items: List[JustificationItem]
 
     system = (
-        "You draft audit justifications in English for security requirement outcomes.\n"
+        "/no_think\n"
+        "You draft very short audit justifications in English for security requirement outcomes.\n"
         "Strict rules:\n"
+        "- Do not reason step by step.\n"
+        "- Do not produce hidden reasoning.\n"
+        "- Return the final JSON immediately.\n"
         "- Output English only.\n"
         "- If any provided notes contain non-English text, paraphrase them into English and do not quote them verbatim.\n"
         "- Do not invent evidence or flags.\n"
         "- Use only the provided context.\n"
-        "- Keep 1 to 3 sentences per requirement.\n"
-        "- Explicitly mention: app_verdict.state, normalized app_verdict.summary (YES/NO/NA), notes (include 'Fallback verdict' if present), and evidence_count.\n"
+        "- Keep exactly 1 short sentence per requirement.\n"
+        "- Mention state, normalized summary (YES/NO/NA), relevant note hint, and evidence_count when available.\n"
         "- If a flag is not present in the fingerprint, state: 'flag not present in fingerprint'.\n"
         "- Do not change the precomputed result.\n"
         "- Return ONLY JSON in the form: {\"items\": [{\"id\": \"...\", \"justification\": \"...\"}, ...]}.\n"
     )
     user_payload = {"batch": batch_ctx}
+    ids = [str(item.get("id") or "") for item in batch_ctx if isinstance(item, dict)]
+    print(
+        f"[AI] Justification request prepared: items={len(batch_ctx)} "
+        f"| ids={','.join(ids[:5])}{'...' if len(ids) > 5 else ''} "
+        f"| model={model} | max_tokens={max_tokens} | parse={supports_parse}",
+        flush=True,
+    )
+
     last_err: Optional[Exception] = None
     for attempt in range(1, 4):
+        attempt_started_at = time.time()
+        print(
+            f"[AI] Justification attempt {attempt}/3 started: items={len(batch_ctx)}",
+            flush=True,
+        )
         try:
             if supports_parse:
                 resp = client.responses.parse(
                     model=model,
-                    input=[{"role": "system", "content": system}, {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)}],
+                    input=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+                    ],
                     text_format=JustificationBatch,
                     max_output_tokens=max_tokens,
                     reasoning={"effort": effort},
                 )
                 parsed = getattr(resp, "output_parsed", None)
                 if parsed is not None:
-                    return {it.id: it.justification.strip() for it in parsed.items}
+                    out = {it.id: it.justification.strip() for it in parsed.items}
+                    print(
+                        f"[AI] Justification attempt {attempt}/3 succeeded via parse: "
+                        f"received={len(out)}/{len(batch_ctx)} "
+                        f"| elapsed={time.time() - attempt_started_at:.1f}s",
+                        flush=True,
+                    )
+                    return out
+
             resp = client.responses.create(
                 model=model,
-                input=[{"role": "system", "content": system}, {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)}],
+                input=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+                ],
                 max_output_tokens=max_tokens,
                 reasoning={"effort": effort},
             )
@@ -508,13 +543,25 @@ def generate_justifications_via_openai(batch_ctx: List[Dict[str, Any]]) -> Dict[
             for it in obj.get("items", []):
                 if isinstance(it, dict) and "id" in it and "justification" in it:
                     out[str(it["id"])] = str(it.get("justification") or "").strip()
+            print(
+                f"[AI] Justification attempt {attempt}/3 succeeded via JSON extraction: "
+                f"received={len(out)}/{len(batch_ctx)} "
+                f"| elapsed={time.time() - attempt_started_at:.1f}s",
+                flush=True,
+            )
             return out
         except Exception as e:
             last_err = e
+            print(
+                f"[WARN] Justification attempt {attempt}/3 failed: {e} "
+                f"| elapsed={time.time() - attempt_started_at:.1f}s",
+                file=sys.stderr,
+                flush=True,
+            )
             time.sleep(0.6 * attempt)
-    print(f"[WARN] AI justification generation failed after retries: {last_err}", file=sys.stderr)
-    return {}
 
+    print(f"[WARN] AI justification generation failed after retries: {last_err}", file=sys.stderr, flush=True)
+    return {}
 
 def deterministic_justification(req: RequirementAudit, flag_evidences: List[FlagEvidence], meta: Dict[str, Any]) -> str:
     def _note_hint(fe: FlagEvidence) -> str:
@@ -601,7 +648,7 @@ def main() -> None:
                 raise SystemExit("STRICT_ENGLISH_OUTPUT is enabled, but non-English requirement descriptions were detected and the AI runtime is unavailable. Provide an English requisites.json or expose OPENAI_API_KEY.")
             print("[WARN] Non-English descriptions detected; translation skipped because AI runtime is unavailable.", file=sys.stderr)
         else:
-            print(f"[AI] Translating {len(to_translate)} requirement description(s) to English...")
+            print(f"[AI] Translating {len(to_translate)} requirement description(s) to English...", flush=True)
             translations = translate_texts_to_english_via_openai(to_translate)
             missing = [it["id"] for it in to_translate if it["id"] not in translations or not translations[it["id"]].strip()]
             if missing and strict_english:
@@ -627,7 +674,14 @@ def main() -> None:
         start = b * batch_size
         end = min(total, start + batch_size)
         req_slice = requirements[start:end]
-        print(f"[AI] Batch {b + 1}/{n_batches}: {len(req_slice)} requirements")
+        batch_started_at = time.time()
+        print(
+            f"[AI] Starting batch {b + 1}/{n_batches}: "
+            f"requirements {start + 1}-{end} of {total} "
+            f"| batch_size={len(req_slice)} "
+            f"| completed_before={len(audits)}/{total}",
+            flush=True,
+        )
         batch_ctx: List[Dict[str, Any]] = []
         batch_results: List[Tuple[RequirementAudit, List[FlagEvidence], Dict[str, Any]]] = []
 
@@ -659,7 +713,41 @@ def main() -> None:
             batch_ctx.append({"id": puid, "description_en": desc_en, "result": result, "flags_used": flag_ids, "meta": meta, "flags": flags_ctx})
 
         use_openai_just = env_bool("USE_OPENAI_JUSTIFICATIONS", False)
-        just_map = generate_justifications_via_openai(batch_ctx) if use_openai_just else {}
+        if use_openai_just:
+            print(
+                f"[AI] Calling local/cloud AI for batch {b + 1}/{n_batches}: "
+                f"{len(batch_ctx)} requirement(s) | range={start + 1}-{end}",
+                flush=True,
+            )
+            ai_call_started_at = time.time()
+            just_map = generate_justifications_via_openai(batch_ctx)
+            ai_call_elapsed_s = time.time() - ai_call_started_at
+            print(
+                f"[AI] AI call finished for batch {b + 1}/{n_batches}: "
+                f"received={len(just_map)}/{len(batch_ctx)} justification(s) "
+                f"| elapsed={ai_call_elapsed_s:.1f}s",
+                flush=True,
+            )
+        else:
+            just_map = {}
+            print(
+                f"[AI] AI justifications disabled for batch {b + 1}/{n_batches}; "
+                f"using deterministic justifications.",
+                flush=True,
+            )
+
+        missing_ai_justifications = 0
+        if use_openai_just:
+            missing_ai_justifications = sum(
+                1 for req_audit, _flag_evs, _meta in batch_results
+                if not (just_map.get(req_audit.puid, "") or "").strip()
+            )
+
+        print(
+            f"[AI] Finalizing batch {b + 1}/{n_batches}: "
+            f"deterministic_fallbacks={missing_ai_justifications}/{len(batch_results)}",
+            flush=True,
+        )
 
         for req_audit, flag_evs, meta in batch_results:
             just = (just_map.get(req_audit.puid, "") or "").strip() or deterministic_justification(req_audit, flag_evs, meta)
@@ -671,6 +759,15 @@ def main() -> None:
             audits.append(req_audit)
             counts[req_audit.result] += 1
 
+        batch_elapsed_s = time.time() - batch_started_at
+        print(
+            f"[AI] Completed batch {b + 1}/{n_batches}: "
+            f"processed={len(audits)}/{total} "
+            f"| yes={counts['yes']} no={counts['no']} n/a={counts['n/a']} "
+            f"| elapsed={batch_elapsed_s:.1f}s",
+            flush=True,
+        )
+
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "audit"
@@ -680,8 +777,8 @@ def main() -> None:
 
     OUTPUT_XLSX_PATH.parent.mkdir(parents=True, exist_ok=True)
     wb.save(OUTPUT_XLSX_PATH)
-    print(f"[OK] Excel generated: {OUTPUT_XLSX_PATH}")
-    print(f"[SUMMARY] total={len(audits)} yes={counts['yes']} no={counts['no']} n/a={counts['n/a']}")
+    print(f"[OK] Excel generated: {OUTPUT_XLSX_PATH}", flush=True)
+    print(f"[SUMMARY] total={len(audits)} yes={counts['yes']} no={counts['no']} n/a={counts['n/a']}", flush=True)
 
 
 if __name__ == "__main__":
