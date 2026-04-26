@@ -17,7 +17,7 @@ jobs:
   ai_requirements_excel:
     name: AI audit -> security_audit_requirements.xlsx
     runs-on: self-hosted
-    timeout-minutes: 60
+    timeout-minutes: 600
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       AI_TASK: ai_requirements_excel

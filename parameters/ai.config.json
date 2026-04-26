@@ -12,8 +12,8 @@
     "api_version": "",
     "api_version_env_var": "",
     "reasoning_effort": "",
-    "max_output_tokens": 6000,
-    "batch_size": 30,
+    "max_output_tokens": 4000,
+    "batch_size": 20,
     "timeout_s": 3000,
     "temperature": 0,
     "extra_headers": {}
@@ -135,8 +135,8 @@
   "ai_requirements_excel": {
     "profile": "lm_studio_local",
     "reasoning_effort": "",
-    "max_output_tokens": 6000,
-    "batch_size": 30,
+    "max_output_tokens": 2000,
+    "batch_size": 20,
     "timeout_s": 1800
   },
   "audit_summary_docx": {
