@@ -21,7 +21,9 @@ jobs:
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       AI_TASK: ai_requirements_excel
+      AI_PROFILE: ${{ vars.AI_PROFILE }}
       AI_PYTHON_VERSION: ${{ vars.AI_PYTHON_VERSION }}
+      AI_RUNTIME_DEBUG: ${{ vars.AI_RUNTIME_DEBUG }}
 
     steps:
       - name: Checkout repository
@@ -98,6 +100,10 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
+          if (Test-Path "scripts/openai") {
+            throw "Local package scripts/openai shadows the real OpenAI SDK. Remove scripts/openai to use provider-based AIRuntime correctly."
+          }
+
           $py = @'
           import sys
           import importlib.util
@@ -132,26 +138,64 @@ jobs:
             exit $LASTEXITCODE
           }
 
-      - name: Verify resolved AI endpoint
+      - name: Verify resolved AI route
         shell: powershell
         env:
           PYTHONNOUSERSITE: "1"
         run: |
           $ErrorActionPreference = "Stop"
 
-          if ([string]::IsNullOrWhiteSpace($env:AI_API_BASE)) {
-            throw "AI_API_BASE is empty after config resolution."
+          Write-Host "AI_PROFILE=$env:AI_PROFILE"
+          Write-Host "AI_PROVIDER=$env:AI_PROVIDER"
+          Write-Host "AI_MODEL=$env:AI_MODEL"
+          Write-Host "AI_API_BASE=$env:AI_API_BASE"
+          Write-Host "AI_KEY_PRESENT=$env:AI_KEY_PRESENT"
+
+          if ([string]::IsNullOrWhiteSpace($env:OPENAI_API_KEY)) {
+            throw "OPENAI_API_KEY is empty."
           }
 
-          $modelsUrl = $env:AI_API_BASE.TrimEnd('/') + "/models"
-          Write-Host "Testing AI endpoint from resolved configuration."
+          if (-not [string]::IsNullOrWhiteSpace($env:AI_API_BASE)) {
+            $modelsUrl = $env:AI_API_BASE.TrimEnd('/') + "/models"
+            Write-Host "Testing AI endpoint from resolved configuration."
 
-          $headers = @{}
-          if (-not [string]::IsNullOrWhiteSpace($env:OPENAI_API_KEY)) {
+            $headers = @{}
             $headers["Authorization"] = "Bearer $env:OPENAI_API_KEY"
+
+            Invoke-RestMethod -Uri $modelsUrl -Headers $headers -Method Get | ConvertTo-Json -Depth 10
+          } else {
+            Write-Host "AI_API_BASE is empty. Assuming cloud provider or provider default endpoint. Skipping local /models check."
           }
 
-          Invoke-RestMethod -Uri $modelsUrl -Headers $headers -Method Get | ConvertTo-Json -Depth 10
+      - name: Verify AI runtime route
+        shell: powershell
+        env:
+          PYTHONNOUSERSITE: "1"
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $py = @'
+          from lib.ai_runtime import AIRuntime, OpenAI, completion
+
+          rt = AIRuntime(task="ai_requirements_excel")
+
+          print("provider:", rt.provider)
+          print("model:", rt.model)
+          print("litellm_model:", rt.litellm_model)
+          print("api_base:", rt.api_base)
+          print("OpenAI available:", OpenAI is not None)
+          print("LiteLLM completion available:", completion is not None)
+          print("uses direct OpenAI:", rt._use_direct_openai())
+
+          if rt.provider == "openai_compatible" and not rt._use_direct_openai():
+              raise SystemExit("openai_compatible provider must use direct OpenAI SDK route")
+          '@
+
+          $env:PYTHONPATH = Join-Path $PWD "scripts"
+          $py | .\.venv\Scripts\python.exe -
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Prepare data dir
         shell: powershell
@@ -228,6 +272,7 @@ jobs:
           STRICT_ENGLISH_OUTPUT: "1"
           TRANSLATE_REQUIREMENT_DESCRIPTIONS: "1"
           PYTHONNOUSERSITE: "1"
+          AI_RUNTIME_DEBUG: ${{ vars.AI_RUNTIME_DEBUG }}
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
