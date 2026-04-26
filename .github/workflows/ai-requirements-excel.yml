@@ -24,6 +24,7 @@ jobs:
       AI_PROFILE: ${{ vars.AI_PROFILE }}
       AI_PYTHON_VERSION: ${{ vars.AI_PYTHON_VERSION }}
       AI_RUNTIME_DEBUG: ${{ vars.AI_RUNTIME_DEBUG }}
+      PYTHONUNBUFFERED: "1"
 
     steps:
       - name: Checkout repository
@@ -149,6 +150,9 @@ jobs:
           Write-Host "AI_PROVIDER=$env:AI_PROVIDER"
           Write-Host "AI_MODEL=$env:AI_MODEL"
           Write-Host "AI_API_BASE=$env:AI_API_BASE"
+          Write-Host "AI_BATCH_SIZE=$env:AI_BATCH_SIZE"
+          Write-Host "AI_MAX_OUTPUT_TOKENS=$env:AI_MAX_OUTPUT_TOKENS"
+          Write-Host "AI_TIMEOUT_S=$env:AI_TIMEOUT_S"
           Write-Host "AI_KEY_PRESENT=$env:AI_KEY_PRESENT"
 
           if ([string]::IsNullOrWhiteSpace($env:OPENAI_API_KEY)) {
@@ -272,6 +276,7 @@ jobs:
           STRICT_ENGLISH_OUTPUT: "1"
           TRANSLATE_REQUIREMENT_DESCRIPTIONS: "1"
           PYTHONNOUSERSITE: "1"
+          PYTHONUNBUFFERED: "1"
           AI_RUNTIME_DEBUG: ${{ vars.AI_RUNTIME_DEBUG }}
         shell: powershell
         run: |

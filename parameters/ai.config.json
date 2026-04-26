@@ -4,17 +4,17 @@
    "profiles": {
     "lm_studio_local": {
     "provider": "openai_compatible",
-    "model": "qwen/qwen3.6-35b-a3b",
-    "litellm_model": "openai/qwen/qwen3.6-35b-a3b",
+    "model": "openai/gpt-oss-20b",
+    "litellm_model": "openai/openai/gpt-oss-20b",
     "api_key_env_var": "OPENAI_API_KEY",
     "api_base": "http://localhost:1234/v1",
     "api_base_env_var": "",
     "api_version": "",
     "api_version_env_var": "",
     "reasoning_effort": "",
-    "max_output_tokens": 300,
-    "batch_size": 10,
-    "timeout_s": 600,
+    "max_output_tokens": 150,
+    "batch_size": 8,
+    "timeout_s": 300,
     "temperature": 0,
     "extra_headers": {}
     },
@@ -135,23 +135,23 @@
   "ai_requirements_excel": {
     "profile": "lm_studio_local",
     "reasoning_effort": "",
-    "max_output_tokens": 300,
-    "batch_size": 10,
-    "timeout_s": 600
+    "max_output_tokens": 150,
+    "batch_size": 8,
+    "timeout_s": 300
   },
   "audit_summary_docx": {
     "profile": "lm_studio_local",
     "reasoning_effort": "",
-    "max_output_tokens": 300,
-    "batch_size": 10,
-    "timeout_s": 600
+    "max_output_tokens": 150,
+    "batch_size": 8,
+    "timeout_s": 300
   },
   "ai_correlate": {
     "profile": "lm_studio_local",
     "reasoning_effort": "",
-    "max_output_tokens": 300,
-    "batch_size": 10,
-    "timeout_s": 600
+    "max_output_tokens": 150,
+    "batch_size": 8,
+    "timeout_s": 300
   }
  }
 }
