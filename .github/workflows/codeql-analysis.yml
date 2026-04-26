@@ -1,0 +1,370 @@
+name: Static SAST
+
+on:
+  workflow_call:
+    inputs:
+      codeql-language:
+        description: "CodeQL language"
+        required: false
+        type: string
+        default: ""
+      codeql-build-mode:
+        description: "CodeQL build mode: manual or none"
+        required: false
+        type: string
+        default: ""
+      codeql-config-file:
+        description: "Path to the CodeQL config file"
+        required: false
+        type: string
+        default: ""
+      build-command:
+        description: "Build command for CodeQL when build-mode is manual"
+        required: false
+        type: string
+        default: ""
+      codeql-java-version:
+        description: "Java version used for the CodeQL build"
+        required: false
+        type: string
+        default: ""
+      android-sdk-java-version:
+        description: "Java version used only for Android SDK setup"
+        required: false
+        type: string
+        default: ""
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  sast:
+    name: SAST security-only report-only
+    if: ${{ github.actor != 'dependabot[bot]' && !startsWith(github.head_ref || github.ref_name || '', 'dependabot/') && (github.event_name != 'pull_request' || github.event.pull_request.user.login != 'dependabot[bot]') }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve workflow configuration
+        id: cfg
+        shell: bash
+        env:
+          INPUT_CODEQL_LANGUAGE: ${{ inputs.codeql-language }}
+          INPUT_CODEQL_BUILD_MODE: ${{ inputs.codeql-build-mode }}
+          INPUT_CODEQL_CONFIG_FILE: ${{ inputs.codeql-config-file }}
+          INPUT_BUILD_COMMAND: ${{ inputs.build-command }}
+          INPUT_CODEQL_JAVA_VERSION: ${{ inputs.codeql-java-version }}
+          INPUT_ANDROID_SDK_JAVA_VERSION: ${{ inputs.android-sdk-java-version }}
+
+          VAR_CODEQL_LANGUAGE: ${{ vars.CODEQL_LANGUAGE }}
+          VAR_CODEQL_BUILD_MODE: ${{ vars.CODEQL_BUILD_MODE }}
+          VAR_CODEQL_CONFIG_FILE: ${{ vars.CODEQL_CONFIG_FILE }}
+          VAR_CODEQL_BUILD_COMMAND: ${{ vars.CODEQL_BUILD_COMMAND }}
+          VAR_CODEQL_JAVA_VERSION: ${{ vars.CODEQL_JAVA_VERSION }}
+          VAR_ANDROID_SDK_JAVA_VERSION: ${{ vars.ANDROID_SDK_JAVA_VERSION }}
+
+          VAR_APK_SOURCE: ${{ vars.APK_SOURCE }}
+          VAR_APK_GLOB: ${{ vars.APK_GLOB }}
+          VAR_APK_PROVIDED_DIR: ${{ vars.APK_PROVIDED_DIR }}
+          VAR_APK_FILE_PATTERN: ${{ vars.APK_FILE_PATTERN }}
+          VAR_APK_ARTIFACT_NAME: ${{ vars.APK_ARTIFACT_NAME }}
+        run: |
+          set -euo pipefail
+
+          language="${INPUT_CODEQL_LANGUAGE:-}"
+          build_mode="${INPUT_CODEQL_BUILD_MODE:-}"
+          config_file="${INPUT_CODEQL_CONFIG_FILE:-}"
+          build_command="${INPUT_BUILD_COMMAND:-}"
+          java_version="${INPUT_CODEQL_JAVA_VERSION:-}"
+          android_sdk_java_version="${INPUT_ANDROID_SDK_JAVA_VERSION:-}"
+
+          apk_source="${VAR_APK_SOURCE:-}"
+          apk_glob="${VAR_APK_GLOB:-}"
+          apk_provided_dir="${VAR_APK_PROVIDED_DIR:-}"
+          apk_file_pattern="${VAR_APK_FILE_PATTERN:-}"
+          apk_artifact_name="${VAR_APK_ARTIFACT_NAME:-}"
+
+          [ -z "$language" ] && language="${VAR_CODEQL_LANGUAGE:-java}"
+          [ -z "$build_mode" ] && build_mode="${VAR_CODEQL_BUILD_MODE:-manual}"
+          [ -z "$config_file" ] && config_file="${VAR_CODEQL_CONFIG_FILE:-.github/codeql/codeql-security.yml}"
+          [ -z "$build_command" ] && build_command="${VAR_CODEQL_BUILD_COMMAND:-./gradlew assembleDebug --no-daemon -x lint}"
+          [ -z "$java_version" ] && java_version="${VAR_CODEQL_JAVA_VERSION:-17}"
+          [ -z "$android_sdk_java_version" ] && android_sdk_java_version="${VAR_ANDROID_SDK_JAVA_VERSION:-17}"
+
+          [ -z "$apk_source" ] && apk_source="codeql"
+          [ -z "$apk_glob" ] && apk_glob="**/*debug*.apk"
+          [ -z "$apk_provided_dir" ] && apk_provided_dir="apk"
+          [ -z "$apk_file_pattern" ] && apk_file_pattern="*.apk"
+          [ -z "$apk_artifact_name" ] && apk_artifact_name="mobile-apk"
+
+          case "$apk_source" in
+            codeql|provided) ;;
+            *)
+              echo "Unsupported APK_SOURCE: $apk_source"
+              exit 1
+              ;;
+          esac
+
+          if [ "$apk_source" = "codeql" ] && [ "$build_mode" != "manual" ]; then
+            echo "APK_SOURCE=codeql requires CODEQL_BUILD_MODE=manual"
+            exit 1
+          fi
+
+          echo "language=$language" >> "$GITHUB_OUTPUT"
+          echo "build_mode=$build_mode" >> "$GITHUB_OUTPUT"
+          echo "config_file=$config_file" >> "$GITHUB_OUTPUT"
+          echo "build_command=$build_command" >> "$GITHUB_OUTPUT"
+          echo "java_version=$java_version" >> "$GITHUB_OUTPUT"
+          echo "android_sdk_java_version=$android_sdk_java_version" >> "$GITHUB_OUTPUT"
+          echo "apk_source=$apk_source" >> "$GITHUB_OUTPUT"
+          echo "apk_glob=$apk_glob" >> "$GITHUB_OUTPUT"
+          echo "apk_provided_dir=$apk_provided_dir" >> "$GITHUB_OUTPUT"
+          echo "apk_file_pattern=$apk_file_pattern" >> "$GITHUB_OUTPUT"
+          echo "apk_artifact_name=$apk_artifact_name" >> "$GITHUB_OUTPUT"
+
+          echo "language=$language"
+          echo "build_mode=$build_mode"
+          echo "config_file=$config_file"
+          echo "build_command=$build_command"
+          echo "java_version=$java_version"
+          echo "android_sdk_java_version=$android_sdk_java_version"
+          echo "apk_source=$apk_source"
+          echo "apk_glob=$apk_glob"
+          echo "apk_provided_dir=$apk_provided_dir"
+          echo "apk_file_pattern=$apk_file_pattern"
+          echo "apk_artifact_name=$apk_artifact_name"
+
+      - name: Set up JDK for Android SDK tools
+        if: ${{ steps.cfg.outputs.language == 'java' && steps.cfg.outputs.build_mode == 'manual' }}
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ steps.cfg.outputs.android_sdk_java_version }}
+
+      - name: Set up Android SDK
+        if: ${{ steps.cfg.outputs.language == 'java' && steps.cfg.outputs.build_mode == 'manual' }}
+        uses: android-actions/setup-android@v3
+
+      - name: Set up JDK for JVM tools
+        if: ${{ steps.cfg.outputs.language == 'java' }}
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ steps.cfg.outputs.java_version }}
+
+      - name: Prepare Android local.properties
+        if: ${{ steps.cfg.outputs.language == 'java' && steps.cfg.outputs.build_mode == 'manual' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDK_PATH="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          if [ -n "${SDK_PATH}" ]; then
+            printf 'sdk.dir=%s\n' "$SDK_PATH" > local.properties
+            echo "local.properties created"
+          else
+            echo "Android SDK was not detected; continuing without local.properties"
+          fi
+
+      - name: Restore release keystore from secret
+        if: ${{ steps.cfg.outputs.language == 'java' && steps.cfg.outputs.build_mode == 'manual' }}
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ]; then
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > release.keystore
+            echo "release.keystore created"
+          else
+            echo "ANDROID_KEYSTORE_BASE64 is empty; continuing without release.keystore"
+          fi
+
+      - name: Make gradlew executable
+        if: ${{ steps.cfg.outputs.build_mode == 'manual' && hashFiles('gradlew') != '' }}
+        shell: bash
+        run: chmod +x ./gradlew
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ steps.cfg.outputs.language }}
+          build-mode: ${{ steps.cfg.outputs.build_mode }}
+          config-file: ${{ steps.cfg.outputs.config_file }}
+
+      - name: Build project for CodeQL
+        if: ${{ steps.cfg.outputs.build_mode == 'manual' }}
+        shell: bash
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_ALIAS_NAME: ${{ secrets.KEYSTORE_ALIAS_NAME }}
+          KEYSTORE_ALIAS_PASS: ${{ secrets.KEYSTORE_ALIAS_PASS }}
+          GOOGLE_PLACE_API_KEY: ${{ secrets.GOOGLE_PLACE_API_KEY }}
+        run: |
+          set -euo pipefail
+          eval "${{ steps.cfg.outputs.build_command }}"
+
+      - name: Resolve APK for downstream jobs
+        id: resolve_apk
+        shell: bash
+        env:
+          APK_SOURCE: ${{ steps.cfg.outputs.apk_source }}
+          APK_GLOB: ${{ steps.cfg.outputs.apk_glob }}
+          APK_PROVIDED_DIR: ${{ steps.cfg.outputs.apk_provided_dir }}
+          APK_FILE_PATTERN: ${{ steps.cfg.outputs.apk_file_pattern }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import fnmatch
+          import glob
+          import os
+          import sys
+          from pathlib import Path
+
+          source = os.environ["APK_SOURCE"].strip()
+          workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+
+          candidates = []
+
+          if source == "provided":
+              provided_dir = (workspace / os.environ["APK_PROVIDED_DIR"].strip()).resolve()
+              pattern = os.environ["APK_FILE_PATTERN"].strip()
+              if not provided_dir.exists():
+                  print(f"Provided APK directory does not exist: {provided_dir}", file=sys.stderr)
+                  sys.exit(1)
+
+              for path in provided_dir.rglob("*"):
+                  if path.is_file() and fnmatch.fnmatch(path.name, pattern):
+                      candidates.append(path)
+
+          elif source == "codeql":
+              apk_glob = os.environ["APK_GLOB"].strip()
+              for item in glob.glob(apk_glob, recursive=True):
+                  path = Path(item).resolve()
+                  if path.is_file():
+                      candidates.append(path)
+
+          else:
+              print(f"Unsupported APK source: {source}", file=sys.stderr)
+              sys.exit(1)
+
+          if not candidates:
+              print("No APK candidates were found.", file=sys.stderr)
+              sys.exit(1)
+
+          candidates = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
+          selected = candidates[0]
+
+          print(f"Selected APK: {selected}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"apk_path={selected}\n")
+              fh.write(f"apk_name={selected.name}\n")
+          PY
+
+      - name: Upload APK artifact for downstream jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.cfg.outputs.apk_artifact_name }}
+          path: ${{ steps.resolve_apk.outputs.apk_path }}
+          if-no-files-found: error
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          output: report/codeql
+          upload: false
+        continue-on-error: true
+
+      - name: Download Detekt CLI
+        if: ${{ steps.cfg.outputs.language == 'java' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tools
+          curl -L -o tools/detekt-cli.jar https://github.com/detekt/detekt/releases/download/v1.23.8/detekt-cli-1.23.8-all.jar
+
+      - name: Run Detekt to SARIF
+        if: ${{ steps.cfg.outputs.language == 'java' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p report
+          java -jar tools/detekt-cli.jar -i . --all-rules --report sarif:report/detekt.sarif || true
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
+      - name: Install Semgrep
+        shell: bash
+        run: |
+          set -euo pipefail
+          pip install --upgrade semgrep
+
+      - name: Run Semgrep to SARIF
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p report
+          semgrep scan \
+            --config p/owasp-top-ten \
+            --config p/security-audit \
+            --config p/secrets \
+            --severity WARNING \
+            --severity ERROR \
+            --sarif \
+            --output report/semgrep.raw.sarif || true
+
+      - name: Filter Semgrep SARIF to keep app code only
+        uses: advanced-security/filter-sarif@v1
+        with:
+          input: report/semgrep.raw.sarif
+          output: report/semgrep.sarif
+          patterns: |
+            -**/test/**
+            -**/androidTest/**
+            -**/*Test*.kt
+            -**/*Test*.java
+            **/src/**
+
+      - name: Ensure jq is installed
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Merge CodeQL, Detekt, and Semgrep SARIF files
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          mkdir -p report
+
+          files=(report/codeql/*.sarif report/detekt.sarif report/semgrep.sarif)
+
+          if [ ${#files[@]} -gt 0 ]; then
+            jq -s '{ "version":"2.1.0", "runs": (map(.runs) | add) }' "${files[@]}" > report/merged.sarif
+          else
+            echo '{ "version":"2.1.0", "runs": [] }' > report/merged.sarif
+          fi
+
+      - name: Upload findings artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-findings
+          path: |
+            report/*.sarif
+            report/codeql/*.sarif
+          if-no-files-found: warn

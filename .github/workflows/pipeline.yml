@@ -1,0 +1,140 @@
+---
+name: mSEC-AM audit pipeline orchestrator
+
+on:
+  push:
+    branches: [ main ]
+  pull_request: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+  security-events: write
+  packages: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+jobs:
+  gate:
+    name: Gate (Dependabot + fork PR)
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      run_phase1: ${{ steps.gate.outputs.run_phase1 }}
+      run_phase2: ${{ steps.gate.outputs.run_phase2 }}
+      is_dependabot: ${{ steps.gate.outputs.is_dependabot }}
+      is_fork_pr: ${{ steps.gate.outputs.is_fork_pr }}
+    steps:
+      - id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          is_dependabot="false"
+          if [[ "${{ github.actor }}" == "dependabot[bot]" ]]; then
+            is_dependabot="true"
+          fi
+          if [[ "${{ github.ref_name }}" == dependabot/* ]]; then
+            is_dependabot="true"
+          fi
+          if [[ "${{ github.head_ref }}" == dependabot/* ]]; then
+            is_dependabot="true"
+          fi
+
+          is_fork_pr="false"
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            if [[ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]]; then
+              is_fork_pr="true"
+            fi
+          fi
+
+          run_phase1="true"
+          run_phase2="true"
+
+          if [[ "$is_dependabot" == "true" ]]; then
+            run_phase1="false"
+            run_phase2="false"
+          fi
+
+          if [[ "$is_fork_pr" == "true" ]]; then
+            run_phase2="false"
+          fi
+
+          echo "is_dependabot=$is_dependabot" >> "$GITHUB_OUTPUT"
+          echo "is_fork_pr=$is_fork_pr" >> "$GITHUB_OUTPUT"
+          echo "run_phase1=$run_phase1" >> "$GITHUB_OUTPUT"
+          echo "run_phase2=$run_phase2" >> "$GITHUB_OUTPUT"
+
+  codeql_analysis:
+    needs: [gate]
+    if: ${{ needs.gate.outputs.run_phase1 == 'true' }}
+    uses: ./.github/workflows/codeql-analysis.yml
+    secrets: inherit
+
+  security_scans:
+    needs: [gate]
+    if: ${{ needs.gate.outputs.run_phase1 == 'true' }}
+    uses: ./.github/workflows/security-scans.yml
+    secrets: inherit
+
+  package_source_zip:
+    needs: [gate]
+    if: ${{ needs.gate.outputs.run_phase1 == 'true' }}
+    uses: ./.github/workflows/package-source-zip.yml
+    secrets: inherit
+
+  mobsf:
+    needs: [gate, codeql_analysis, security_scans, package_source_zip]
+    if: >-
+      ${{
+        needs.gate.outputs.run_phase2 == 'true' &&
+        needs.codeql_analysis.result == 'success' &&
+        needs.security_scans.result == 'success' &&
+        needs.package_source_zip.result == 'success'
+      }}
+    uses: ./.github/workflows/mobsf.yml
+    secrets: inherit
+
+  vision360_generator:
+    needs: [gate, mobsf, security_scans, package_source_zip]
+    if: >-
+      ${{
+        needs.gate.outputs.run_phase2 == 'true' &&
+        needs.mobsf.result == 'success' &&
+        needs.security_scans.result == 'success' &&
+        needs.package_source_zip.result == 'success'
+      }}
+    uses: ./.github/workflows/vision360-generator.yml
+    secrets: inherit
+
+  ai_requirements_excel:
+    needs: [gate, vision360_generator]
+    if: >-
+      ${{
+        needs.gate.outputs.run_phase2 == 'true' &&
+        needs.vision360_generator.result == 'success'
+      }}
+    uses: ./.github/workflows/ai-requirements-excel.yml
+    secrets: inherit
+
+  audit_summary:
+    needs: [gate, ai_requirements_excel]
+    if: >-
+      ${{
+        needs.gate.outputs.run_phase2 == 'true' &&
+        needs.ai_requirements_excel.result == 'success'
+      }}
+    uses: ./.github/workflows/audit-summary.yml
+    secrets: inherit
+
+  noop:
+    needs: [gate]
+    if: ${{ needs.gate.outputs.is_dependabot == 'true' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - run: "printf '%s\n' 'Dependabot detected: skipping pipeline (noop).'"

@@ -1,0 +1,364 @@
+name: Mobile Security Scan
+
+on:
+  workflow_call:
+
+concurrency:
+  group: mobsf-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  mobsf_scan:
+    runs-on: self-hosted
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    env:
+      MOBSF_API_KEY: ${{ secrets.MOBSF_API_KEY }}
+      MOBSF_BASE_URL: ${{ vars.MOBSF_BASE_URL }}
+      APK_ARTIFACT_NAME: ${{ vars.APK_ARTIFACT_NAME }}
+      APK_FILE_PATTERN: ${{ vars.APK_FILE_PATTERN }}
+
+    steps:
+      - name: Resolve artifact settings
+        id: cfg
+        shell: powershell
+        run: |
+          $artifactName = ($env:APK_ARTIFACT_NAME + '').Trim()
+          if ([string]::IsNullOrWhiteSpace($artifactName)) {
+            $artifactName = 'mobile-apk'
+          }
+
+          $apkPattern = ($env:APK_FILE_PATTERN + '').Trim()
+          if ([string]::IsNullOrWhiteSpace($apkPattern)) {
+            $apkPattern = '*.apk'
+          }
+
+          "artifact_name=$artifactName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "apk_pattern=$apkPattern" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.cfg.outputs.artifact_name }}
+          path: apk_input
+
+      - name: Resolve APK from artifact
+        id: locate_apk
+        shell: powershell
+        run: |
+          $apkRoot = Join-Path $env:GITHUB_WORKSPACE 'apk_input'
+          $apkPattern = "${{ steps.cfg.outputs.apk_pattern }}"
+
+          if (-not (Test-Path $apkRoot)) {
+            Write-Error "Artifact directory does not exist: $apkRoot"
+            exit 1
+          }
+
+          $apkCandidates = Get-ChildItem -Path $apkRoot -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like $apkPattern } |
+            Sort-Object LastWriteTimeUtc -Descending
+
+          $apkFile = $apkCandidates | Select-Object -First 1
+
+          if (-not $apkFile) {
+            Write-Error "No APK matching pattern '$apkPattern' was found in downloaded artifact."
+            exit 1
+          }
+
+          Write-Host "Using APK: $($apkFile.FullName)"
+          "apk_path=$($apkFile.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "apk_name=$($apkFile.Name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Log APK details
+        shell: powershell
+        run: |
+          $apkPath = "${{ steps.locate_apk.outputs.apk_path }}"
+          if (Test-Path $apkPath) {
+            $file = Get-Item $apkPath
+            $sizeMb = [math]::Round(($file.Length / 1MB), 2)
+            Write-Host "APK name: $($file.Name)"
+            Write-Host "APK size MB: $sizeMb"
+            Get-FileHash -Algorithm SHA256 $apkPath | Format-List
+          }
+
+      - name: Upload app to MobSF and collect static report
+        id: static_scan
+        shell: powershell
+        run: |
+          $apkPath = "${{ steps.locate_apk.outputs.apk_path }}"
+          if ([string]::IsNullOrWhiteSpace($apkPath) -or -not (Test-Path $apkPath)) {
+            Write-Error 'Resolved APK path is empty or does not exist.'
+            exit 1
+          }
+
+          $baseUrl = ($env:MOBSF_BASE_URL + '').Trim()
+          if ([string]::IsNullOrWhiteSpace($baseUrl)) {
+            $baseUrl = 'http://localhost:8000'
+          }
+          $baseUrl = $baseUrl.TrimEnd('/')
+
+          $apiKey = ($env:MOBSF_API_KEY + '').Trim()
+          if ([string]::IsNullOrWhiteSpace($apiKey)) {
+            Write-Error 'MOBSF_API_KEY is empty.'
+            exit 1
+          }
+
+          $maxAttempts = 24
+          $retryDelaySeconds = 30
+          $scanRequestTimeoutSeconds = 3600
+          $reportRequestTimeoutSeconds = 180
+
+          function Test-MobsfReportReady {
+            param(
+              [AllowNull()]
+              $ReportObject
+            )
+
+            if ($null -eq $ReportObject) {
+              return $false
+            }
+
+            $json = $ReportObject | ConvertTo-Json -Depth 100
+
+            if ([string]::IsNullOrWhiteSpace($json)) {
+              return $false
+            }
+
+            if ($json -match 'The file is not uploaded/available') {
+              return $false
+            }
+
+            if ($json -eq '{}') {
+              return $false
+            }
+
+            $propertyCount = $ReportObject.PSObject.Properties.Name.Count
+            if ($propertyCount -lt 5) {
+              return $false
+            }
+
+            return $true
+          }
+
+          function Invoke-MobsfPost {
+            param(
+              [Parameter(Mandatory = $true)]
+              [string[]] $Urls,
+              [Parameter(Mandatory = $true)]
+              [string] $Token,
+              [Parameter(Mandatory = $true)]
+              [hashtable] $Body,
+              [int] $TimeoutSec = 60
+            )
+
+            foreach ($url in $Urls) {
+              try {
+                return Invoke-RestMethod -Uri $url `
+                  -Method Post `
+                  -TimeoutSec $TimeoutSec `
+                  -Headers @{ Authorization = $Token } `
+                  -Body $Body
+              } catch {
+                $response = $_.Exception.Response
+                $statusCode = $null
+                if ($response -and $response.StatusCode) {
+                  $statusCode = [int]$response.StatusCode
+                }
+
+                if ($statusCode -eq 404) {
+                  Write-Host "Endpoint not found: $url"
+                  continue
+                }
+
+                throw
+              }
+            }
+
+            return $null
+          }
+
+          function Get-MobsfStaticReport {
+            param(
+              [Parameter(Mandatory = $true)]
+              [string] $Url,
+              [Parameter(Mandatory = $true)]
+              [string] $Token,
+              [Parameter(Mandatory = $true)]
+              [string] $Hash
+            )
+
+            try {
+              return Invoke-MobsfPost `
+                -Urls @(
+                  "$Url/api/v1/report_json",
+                  "$Url/api/v1/report_json/"
+                ) `
+                -Token $Token `
+                -Body @{ hash = $Hash } `
+                -TimeoutSec $reportRequestTimeoutSeconds
+            } catch {
+              $message = $_.Exception.Message
+              Write-Host "report_json request failed: $message"
+              Set-Content -Path mobsf_report_last_error.txt -Value $message
+              return $null
+            }
+          }
+
+          Write-Host "Uploading APK to MobSF from: $apkPath"
+          $uploadResult = curl.exe -sS -X POST "$baseUrl/api/v1/upload" `
+            -H "Authorization: $apiKey" `
+            -F "file=@$apkPath"
+
+          if ([string]::IsNullOrWhiteSpace($uploadResult)) {
+            Write-Error 'MobSF upload returned an empty response.'
+            exit 1
+          }
+
+          $uploadResult | Set-Content mobsf_upload_response.json
+          $uploadResponse = Get-Content mobsf_upload_response.json -Raw | ConvertFrom-Json
+
+          $hash = "$($uploadResponse.hash)".Trim()
+          if ([string]::IsNullOrWhiteSpace($hash)) {
+            Write-Error 'No hash returned from MobSF upload.'
+            exit 1
+          }
+
+          Write-Host "MobSF upload hash: $hash"
+          "hash=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+          try {
+            $scanResponse = Invoke-MobsfPost `
+              -Urls @(
+                "$baseUrl/api/v1/scan",
+                "$baseUrl/api/v1/scan/"
+              ) `
+              -Token $apiKey `
+              -Body @{ hash = $hash } `
+              -TimeoutSec $scanRequestTimeoutSeconds
+
+            if ($null -ne $scanResponse) {
+              $scanResponse | ConvertTo-Json -Depth 100 | Set-Content mobsf_scan_response.json
+            }
+
+            Write-Host 'MobSF scan request returned successfully.'
+          } catch {
+            $message = $_.Exception.Message
+            Write-Host "MobSF scan request did not return quickly: $message"
+            Set-Content -Path mobsf_scan_last_error.txt -Value $message
+            Write-Host 'Continuing to poll report_json in case the scan is running server-side.'
+          }
+
+          $reportReady = $false
+
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            Write-Host "Polling MobSF static report, attempt $attempt of $maxAttempts"
+
+            $report = Get-MobsfStaticReport -Url $baseUrl -Token $apiKey -Hash $hash
+
+            if ($null -ne $report) {
+              $report | ConvertTo-Json -Depth 100 | Set-Content mobsf_report_last_response.json
+            }
+
+            if ($null -ne $report -and (Test-MobsfReportReady -ReportObject $report)) {
+              $report | ConvertTo-Json -Depth 100 | Set-Content mobsf_results.json
+              $reportReady = $true
+              Write-Host 'MobSF static report is ready.'
+              break
+            }
+
+            if ($attempt -lt $maxAttempts) {
+              Start-Sleep -Seconds $retryDelaySeconds
+            }
+          }
+
+          if (-not $reportReady) {
+            Write-Error "MobSF static report was not ready after $maxAttempts attempts."
+            exit 1
+          }
+
+      - name: Write scan metadata
+        shell: powershell
+        run: |
+          $metadata = [ordered]@{
+            repository = "${{ github.repository }}"
+            ref = "${{ github.ref }}"
+            sha = "${{ github.sha }}"
+            run_id = "${{ github.run_id }}"
+            run_number = "${{ github.run_number }}"
+            run_attempt = "${{ github.run_attempt }}"
+            apk_path = "${{ steps.locate_apk.outputs.apk_path }}"
+            apk_name = "${{ steps.locate_apk.outputs.apk_name }}"
+            mobsf_hash = "${{ steps.static_scan.outputs.hash }}"
+            generated_at_utc = [DateTime]::UtcNow.ToString('o')
+          }
+          $metadata | ConvertTo-Json -Depth 20 | Set-Content mobsf_scan_metadata.json
+
+      - name: Upload MobSF static results
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobsf-report
+          path: |
+            mobsf_results.json
+            mobsf_scan_metadata.json
+            mobsf_upload_response.json
+            mobsf_scan_response.json
+            mobsf_report_last_response.json
+            mobsf_report_last_error.txt
+            mobsf_scan_last_error.txt
+          if-no-files-found: warn
+
+      - name: Try to download MobSF dynamic JSON report if available
+        if: ${{ steps.static_scan.outputs.hash != '' }}
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $baseUrl = ($env:MOBSF_BASE_URL + '').Trim()
+          if ([string]::IsNullOrWhiteSpace($baseUrl)) {
+            $baseUrl = 'http://localhost:8000'
+          }
+          $baseUrl = $baseUrl.TrimEnd('/')
+
+          $apiKey = $env:MOBSF_API_KEY
+          $hash = "${{ steps.static_scan.outputs.hash }}"
+
+          if ([string]::IsNullOrWhiteSpace($hash)) {
+            Write-Host 'No hash from static scan; skipping dynamic report fetch.'
+            exit 0
+          }
+
+          Write-Host "Dynamic scan hash: $hash"
+
+          try {
+            Invoke-RestMethod -Uri "$baseUrl/api/v1/dynamic/stop_analysis" `
+              -Method Post `
+              -TimeoutSec 30 `
+              -Headers @{ Authorization = $apiKey } `
+              -Body @{ hash = $hash } | Out-Null
+          } catch {
+            Write-Host "stop_analysis not needed or not available: $($_.Exception.Message)"
+          }
+
+          try {
+            $dyn = Invoke-RestMethod -Uri "$baseUrl/api/v1/dynamic/report_json" `
+              -Method Post `
+              -TimeoutSec 120 `
+              -Headers @{ Authorization = $apiKey } `
+              -Body @{ hash = $hash }
+
+            if ($dyn) {
+              $dyn | ConvertTo-Json -Depth 100 | Set-Content mobsf_dynamic_results.json
+              Write-Host 'Dynamic report saved to mobsf_dynamic_results.json'
+            } else {
+              Write-Host 'Dynamic report not available.'
+            }
+          } catch {
+            Write-Host "Dynamic report fetch failed: $($_.Exception.Message)"
+          }
+
+      - name: Upload MobSF dynamic results if present
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobsf-dynamic-report
+          path: mobsf_dynamic_results.json
+          if-no-files-found: ignore

@@ -1,0 +1,180 @@
+name: AI Requirements Audit (Excel)
+
+on:
+  workflow_call:
+    secrets:
+      OPENAI_API_KEY:
+        required: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  ai_requirements_excel:
+    name: AI audit -> security_audit_requirements.xlsx
+    runs-on: self-hosted
+    timeout-minutes: 60
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      AI_TASK: ai_requirements_excel
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify Python
+        shell: powershell
+        run: |
+          python --version
+          python -c "import sys; print(sys.executable)"
+
+      - name: Create clean venv
+        shell: powershell
+        run: |
+          if (Test-Path ".venv") {
+            Remove-Item -Recurse -Force ".venv"
+          }
+          python -m venv .venv
+          .\.venv\Scripts\python.exe --version
+
+      - name: Install dependencies
+        shell: powershell
+        env:
+          PYTHONNOUSERSITE: "1"
+        run: |
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install --no-cache-dir --force-reinstall -r requirements/ai-runtime.txt
+          .\.venv\Scripts\python.exe -m pip check
+
+      - name: Verify AI imports
+        shell: powershell
+        env:
+          PYTHONNOUSERSITE: "1"
+        run: |
+          $py = @'
+          import sys
+          import importlib.util
+          import openai
+          import litellm
+
+          print("python:", sys.executable)
+          print("openai version:", getattr(openai, "__version__", "unknown"))
+          print("openai file:", getattr(openai, "__file__", "unknown"))
+          print("openai._models spec:", importlib.util.find_spec("openai._models"))
+          print("litellm version:", getattr(litellm, "__version__", "unknown"))
+          print("litellm file:", getattr(litellm, "__file__", "unknown"))
+
+          if importlib.util.find_spec("openai._models") is None:
+              raise SystemExit("openai._models is not importable in this venv")
+          '@
+          $py | .\.venv\Scripts\python.exe -
+
+      - name: Resolve AI config
+        shell: powershell
+        env:
+          PYTHONNOUSERSITE: "1"
+        run: |
+          .\.venv\Scripts\python.exe scripts/resolve_ai_config.py --task "$env:AI_TASK" --github-env "$env:GITHUB_ENV"
+
+      - name: Verify resolved AI endpoint
+        shell: powershell
+        env:
+          PYTHONNOUSERSITE: "1"
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:AI_API_BASE)) {
+            throw "AI_API_BASE is empty after config resolution."
+          }
+
+          $modelsUrl = $env:AI_API_BASE.TrimEnd('/') + "/models"
+          Write-Host "Resolved AI_API_BASE: $env:AI_API_BASE"
+          Write-Host "Testing models endpoint: $modelsUrl"
+
+          $headers = @{}
+          if (-not [string]::IsNullOrWhiteSpace($env:OPENAI_API_KEY)) {
+            $headers["Authorization"] = "Bearer $env:OPENAI_API_KEY"
+          }
+
+          Invoke-RestMethod -Uri $modelsUrl -Headers $headers -Method Get | ConvertTo-Json -Depth 10
+
+      - name: Prepare data dir
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\mnt\data | Out-Null
+          if (Test-Path "C:\mnt\data\security_audit_requirements.xlsx") {
+            Remove-Item -Force "C:\mnt\data\security_audit_requirements.xlsx"
+          }
+
+      - name: Download VISION360 bundle artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: vision360-bundle
+          path: _vision360_bundle
+
+      - name: Ensure inputs at mandatory paths
+        shell: powershell
+        env:
+          PYTHONNOUSERSITE: "1"
+        run: |
+          if (-not (Test-Path "requirements/requisites.json")) {
+            throw "requirements/requisites.json not found"
+          }
+
+          $py = @'
+          import json, sys
+          from pathlib import Path
+
+          src = Path("requirements/requisites.json")
+          dst = Path(r"C:\mnt\data\requisites.json")
+
+          raw = src.read_text(encoding="utf-8", errors="replace")
+          s = raw.lstrip()
+          if s.startswith("{{"):
+              raw = raw.replace("{{", "{", 1)
+
+          data = json.loads(raw)
+          if isinstance(data, dict) and isinstance(data.get("requirements"), list):
+              data = data["requirements"]
+
+          if not isinstance(data, list):
+              print("requisites.json must be a JSON array.", file=sys.stderr)
+              raise SystemExit(1)
+
+          dst.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+          '@
+          $py | .\.venv\Scripts\python.exe -
+
+          if (Test-Path "_vision360_bundle/vision360_fingerprint.json") {
+            Copy-Item "_vision360_bundle/vision360_fingerprint.json" "C:\mnt\data\vision360_fingerprint.json" -Force
+          }
+          elseif (Test-Path "_vision360_bundle/vision360_bundle.zip") {
+            Expand-Archive -Path "_vision360_bundle/vision360_bundle.zip" -DestinationPath "C:\mnt\data" -Force
+          }
+          else {
+            throw "vision360_fingerprint.json or vision360_bundle.zip not found in vision360-bundle."
+          }
+
+      - name: Run AI audit
+        env:
+          USE_OPENAI_JUSTIFICATIONS: "1"
+          STRICT_ENGLISH_OUTPUT: "1"
+          TRANSLATE_REQUIREMENT_DESCRIPTIONS: "1"
+          PYTHONNOUSERSITE: "1"
+        shell: powershell
+        run: |
+          .\.venv\Scripts\python.exe scripts/ai_security_audit_requirements_excel.py
+          if (-not (Test-Path "C:\mnt\data\security_audit_requirements.xlsx")) {
+            throw "security_audit_requirements.xlsx was not created"
+          }
+
+      - name: Upload Excel output
+        uses: actions/upload-artifact@v6
+        with:
+          name: security-audit-excel
+          if-no-files-found: error
+          path: C:\mnt\data\security_audit_requirements.xlsx
