@@ -516,6 +516,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/audit-summary-docx-transfer
           key: audit-summary-docx-${{ github.run_id }}-${{ github.run_attempt }}
+          enableCrossOsArchive: true
 
   audit_summary_pdf_zip:
     name: Audit Summary Stage 3 -> PDF ZIP
@@ -563,6 +564,7 @@ jobs:
           path: ${{ runner.temp }}/audit-summary-docx-transfer
           key: audit-summary-docx-${{ github.run_id }}-${{ github.run_attempt }}
           fail-on-cache-miss: true
+          enableCrossOsArchive: true
 
       - name: Copy restored DOCX into output directory
         shell: bash
