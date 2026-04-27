@@ -511,12 +511,13 @@ jobs:
           cp "$AUDIT_SUMMARY_DOCX_PATH" "$AUDIT_SUMMARY_TRANSFER_DIR/Audit Summary.docx"
           test -f "$AUDIT_SUMMARY_TRANSFER_DIR/Audit Summary.docx"
 
-      - name: Save DOCX for PDF job without publishing artifact
-        uses: actions/cache/save@v4
+      - name: Upload temporary DOCX transfer artifact
+        uses: actions/upload-artifact@v6
         with:
-          path: ${{ runner.temp }}/audit-summary-docx-transfer
-          key: audit-summary-docx-${{ github.run_id }}-${{ github.run_attempt }}
-          enableCrossOsArchive: true
+          name: _audit-summary-docx-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 1
+          path: ${{ runner.temp }}/audit-summary-docx-transfer/Audit Summary.docx
 
   audit_summary_pdf_zip:
     name: Audit Summary Stage 3 -> PDF ZIP
@@ -558,13 +559,11 @@ jobs:
           set -euo pipefail
           mkdir -p "$VISION360_DATA_DIR" "$AUDIT_SUMMARY_TRANSFER_DIR"
 
-      - name: Restore DOCX from internal cache
-        uses: actions/cache/restore@v4
+      - name: Download temporary DOCX transfer artifact
+        uses: actions/download-artifact@v6
         with:
+          name: _audit-summary-docx-transfer-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/audit-summary-docx-transfer
-          key: audit-summary-docx-${{ github.run_id }}-${{ github.run_attempt }}
-          fail-on-cache-miss: true
-          enableCrossOsArchive: true
 
       - name: Copy restored DOCX into output directory
         shell: bash
@@ -612,4 +611,27 @@ jobs:
           path: |
             ${{ runner.temp }}/vision360-data/Audit Summary.docx
             ${{ runner.temp }}/vision360-data/Audit Summary.pdf
-            ${{ runner.temp }}/vision360-data/audit-summary-bundle.zip
+
+      - name: Delete temporary DOCX transfer artifact
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRANSFER_ARTIFACT_NAME: _audit-summary-docx-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "[CLEANUP] Looking for temporary artifact: $TRANSFER_ARTIFACT_NAME"
+
+          artifact_id="$(
+            gh api               -H "Accept: application/vnd.github+json"               "/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts"               --jq ".artifacts[] | select(.name == env.TRANSFER_ARTIFACT_NAME) | .id"               | head -n 1
+          )"
+
+          if [ -z "$artifact_id" ]; then
+            echo "[CLEANUP] Temporary artifact was not found or was already deleted."
+            exit 0
+          fi
+
+          gh api             --method DELETE             -H "Accept: application/vnd.github+json"             "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}"
+
+          echo "[CLEANUP] Deleted temporary artifact id: $artifact_id"
