@@ -19,11 +19,6 @@ jobs:
     name: Audit Summary Stage 1 no AI -> analysis pack JSON
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      VISION360_DATA_DIR: "${{ runner.temp }}/vision360-data"
-      AUDIT_EXCEL_PATH: "${{ runner.temp }}/vision360-data/security_audit_requirements.xlsx"
-      AUDIT_ANALYSIS_JSON_PATH: "${{ runner.temp }}/vision360-data/audit_summary_analysis_pack.json"
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -34,6 +29,25 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+
+      - name: Configure portable runtime paths
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          data_dir="$RUNNER_TEMP/vision360-data"
+          audit_excel_path="$data_dir/security_audit_requirements.xlsx"
+          analysis_json_path="$data_dir/audit_summary_analysis_pack.json"
+
+          {
+            echo "VISION360_DATA_DIR=$data_dir"
+            echo "AUDIT_EXCEL_PATH=$audit_excel_path"
+            echo "AUDIT_ANALYSIS_JSON_PATH=$analysis_json_path"
+          } >> "$GITHUB_ENV"
+
+          echo "[PATH] VISION360_DATA_DIR=$data_dir"
+          echo "[PATH] AUDIT_EXCEL_PATH=$audit_excel_path"
+          echo "[PATH] AUDIT_ANALYSIS_JSON_PATH=$analysis_json_path"
 
       - name: Prepare portable data directory
         shell: bash
@@ -87,18 +101,62 @@ jobs:
       AI_RUNTIME_DEBUG: ${{ vars.AI_RUNTIME_DEBUG }}
       PYTHONUNBUFFERED: "1"
       PYTHONNOUSERSITE: "1"
-      VISION360_DATA_DIR: "${{ runner.temp }}/vision360-data"
-      AUDIT_ANALYSIS_JSON_PATH: "${{ runner.temp }}/vision360-data/audit_summary_analysis_pack.json"
-      AUDIT_EXCEL_PATH: "${{ runner.temp }}/vision360-data/security_audit_requirements.xlsx"
-      AUDIT_SUMMARY_DOCX_PATH: "${{ runner.temp }}/vision360-data/Audit Summary.docx"
-      AUDIT_SUMMARY_CHART_DIR: "${{ runner.temp }}/vision360-data/_audit_summary_charts"
-      MPLCONFIGDIR: "${{ runner.temp }}/vision360-data/_matplotlib"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Configure portable runtime paths on Windows
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $dataDir = Join-Path $env:RUNNER_TEMP "vision360-data"
+          $analysisJsonPath = Join-Path $dataDir "audit_summary_analysis_pack.json"
+          $auditExcelPath = Join-Path $dataDir "security_audit_requirements.xlsx"
+          $docxPath = Join-Path $dataDir "Audit Summary.docx"
+          $chartDir = Join-Path $dataDir "_audit_summary_charts"
+          $mplConfigDir = Join-Path $dataDir "_matplotlib"
+
+          "VISION360_DATA_DIR=$dataDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "AUDIT_ANALYSIS_JSON_PATH=$analysisJsonPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "AUDIT_EXCEL_PATH=$auditExcelPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "AUDIT_SUMMARY_DOCX_PATH=$docxPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "AUDIT_SUMMARY_CHART_DIR=$chartDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "MPLCONFIGDIR=$mplConfigDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "[PATH] VISION360_DATA_DIR=$dataDir"
+          Write-Host "[PATH] AUDIT_ANALYSIS_JSON_PATH=$analysisJsonPath"
+          Write-Host "[PATH] AUDIT_SUMMARY_DOCX_PATH=$docxPath"
+
+      - name: Configure portable runtime paths on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          data_dir="$RUNNER_TEMP/vision360-data"
+          analysis_json_path="$data_dir/audit_summary_analysis_pack.json"
+          audit_excel_path="$data_dir/security_audit_requirements.xlsx"
+          docx_path="$data_dir/Audit Summary.docx"
+          chart_dir="$data_dir/_audit_summary_charts"
+          mpl_config_dir="$data_dir/_matplotlib"
+
+          {
+            echo "VISION360_DATA_DIR=$data_dir"
+            echo "AUDIT_ANALYSIS_JSON_PATH=$analysis_json_path"
+            echo "AUDIT_EXCEL_PATH=$audit_excel_path"
+            echo "AUDIT_SUMMARY_DOCX_PATH=$docx_path"
+            echo "AUDIT_SUMMARY_CHART_DIR=$chart_dir"
+            echo "MPLCONFIGDIR=$mpl_config_dir"
+          } >> "$GITHUB_ENV"
+
+          echo "[PATH] VISION360_DATA_DIR=$data_dir"
+          echo "[PATH] AUDIT_ANALYSIS_JSON_PATH=$analysis_json_path"
+          echo "[PATH] AUDIT_SUMMARY_DOCX_PATH=$docx_path"
 
       - name: Verify Python launcher on Windows
         if: runner.os == 'Windows'
@@ -536,13 +594,29 @@ jobs:
     needs: [audit_summary_docx]
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      VISION360_DATA_DIR: "${{ runner.temp }}/vision360-data"
-      AUDIT_SUMMARY_DOCX_PATH: "${{ runner.temp }}/vision360-data/Audit Summary.docx"
-      AUDIT_SUMMARY_PDF_PATH: "${{ runner.temp }}/vision360-data/Audit Summary.pdf"
-      AUDIT_SUMMARY_ZIP_PATH: "${{ runner.temp }}/vision360-data/audit-summary-bundle.zip"
-
     steps:
+      - name: Configure portable runtime paths
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          data_dir="$RUNNER_TEMP/vision360-data"
+          docx_path="$data_dir/Audit Summary.docx"
+          pdf_path="$data_dir/Audit Summary.pdf"
+          zip_path="$data_dir/audit-summary-bundle.zip"
+
+          {
+            echo "VISION360_DATA_DIR=$data_dir"
+            echo "AUDIT_SUMMARY_DOCX_PATH=$docx_path"
+            echo "AUDIT_SUMMARY_PDF_PATH=$pdf_path"
+            echo "AUDIT_SUMMARY_ZIP_PATH=$zip_path"
+          } >> "$GITHUB_ENV"
+
+          echo "[PATH] VISION360_DATA_DIR=$data_dir"
+          echo "[PATH] AUDIT_SUMMARY_DOCX_PATH=$docx_path"
+          echo "[PATH] AUDIT_SUMMARY_PDF_PATH=$pdf_path"
+          echo "[PATH] AUDIT_SUMMARY_ZIP_PATH=$zip_path"
+
       - name: Prepare portable data directory
         shell: bash
         run: |
