@@ -5,6 +5,7 @@ import json
 import os
 import re
 from datetime import datetime, date
+from pathlib import Path
 from typing import Dict, Any, List
 
 import matplotlib.pyplot as plt
@@ -20,9 +21,42 @@ try:
 except Exception:
     AIRuntime = None  # type: ignore
 
-DEFAULT_IN = "/mnt/data/audit_summary_analysis_pack.json"
-DEFAULT_OUT = "/mnt/data/Audit Summary.docx"
-CHART_DIR = "/mnt/data/_audit_summary_charts"
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _runtime_data_dir() -> Path:
+    # Prefer explicit, cross-platform data-directory variables.
+    # If none are provided, use GitHub Actions RUNNER_TEMP when available.
+    # As a final local fallback, use a repository-local hidden directory.
+    for name in ("VISION360_DATA_DIR", "AUDIT_DATA_DIR", "SECURITY_AUDIT_DATA_DIR"):
+        raw = os.getenv(name, "").strip()
+        if raw:
+            base = Path(raw)
+            base.mkdir(parents=True, exist_ok=True)
+            return base
+
+    runner_temp = os.getenv("RUNNER_TEMP", "").strip()
+    if runner_temp:
+        base = Path(runner_temp) / "vision360-data"
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+
+    base = _repo_root() / ".vision360-data"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _env_path(env_name: str, default_filename: str) -> Path:
+    raw = os.getenv(env_name, "").strip()
+    if raw:
+        return Path(raw)
+    return _runtime_data_dir() / default_filename
+
+
+DEFAULT_IN = str(_env_path("AUDIT_ANALYSIS_JSON_PATH", "audit_summary_analysis_pack.json"))
+DEFAULT_OUT = str(_env_path("AUDIT_SUMMARY_DOCX_PATH", "Audit Summary.docx"))
+CHART_DIR = str(_env_path("AUDIT_SUMMARY_CHART_DIR", "_audit_summary_charts"))
 
 HEADER_TEXT = "mSEC-AM Audit Summary - OpenMRS Android Client v3.1.1"
 
@@ -354,10 +388,77 @@ def _target_date_str(audit_dt: date, sev: str) -> str:
 
 
 def _extract_json_object(text: str) -> str:
-    m = re.search(r"\{.*\}\s*$", text.strip(), flags=re.DOTALL)
-    if not m:
-        raise ValueError("No JSON object found in model output.")
-    return m.group(0)
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Model returned empty text.")
+
+    # Direct JSON object.
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return json.dumps(obj, ensure_ascii=False)
+    except Exception:
+        pass
+
+    # JSON inside Markdown code fence.
+    fenced = re.search(
+        r"```(?:json)?\s*(\{.*?\})\s*```",
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if fenced:
+        return fenced.group(1)
+
+    # Remove common fence wrappers if the model used an unterminated fence.
+    cleaned = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    try:
+        obj = json.loads(cleaned)
+        if isinstance(obj, dict):
+            return json.dumps(obj, ensure_ascii=False)
+    except Exception:
+        pass
+
+    # Find the first balanced JSON object anywhere in the response.
+    start = text.find("{")
+    if start < 0:
+        preview = text[:500].replace("\n", "\\n")
+        raise ValueError(f"No JSON object found in model output. Preview: {preview}")
+
+    depth = 0
+    in_string = False
+    escape = False
+
+    for i in range(start, len(text)):
+        ch = text[i]
+
+        if escape:
+            escape = False
+            continue
+
+        if ch == "\\":
+            escape = True
+            continue
+
+        if ch == '"':
+            in_string = not in_string
+            continue
+
+        if in_string:
+            continue
+
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = text[start:i + 1]
+                obj = json.loads(candidate)
+                if isinstance(obj, dict):
+                    return candidate
+
+    preview = text[:500].replace("\n", "\\n")
+    raise ValueError(f"No complete JSON object found in model output. Preview: {preview}")
 
 
 def _call_llm_for_style(patterns: List[Dict[str, Any]], likelihood_rubric: Dict[str, str], max_takeaways: int = 7) -> Dict[str, Any]:
@@ -387,7 +488,8 @@ def _call_llm_for_style(patterns: List[Dict[str, Any]], likelihood_rubric: Dict[
         "You will improve wording and generate actionable recommendations ONLY at the weakness-pattern level. "
         "You must NOT invent specific implemented controls. You must NOT invent metrics. "
         "You must NOT claim facts beyond the provided anchors and counts. "
-        "Return strict JSON only."
+        "Return exactly one raw JSON object and nothing else. "
+        "Do not use Markdown, code fences, prose outside JSON, comments, or tool calls."
     )
     user_payload = {
         "task": "Generate paper-quality prose components grounded in workbook-derived prevalence counts.",
@@ -419,10 +521,14 @@ def _call_llm_for_style(patterns: List[Dict[str, Any]], likelihood_rubric: Dict[
 def main() -> None:
     in_path = os.getenv("AUDIT_ANALYSIS_JSON_PATH", DEFAULT_IN)
     out_path = os.getenv("AUDIT_SUMMARY_DOCX_PATH", DEFAULT_OUT)
+    chart_dir = os.getenv("AUDIT_SUMMARY_CHART_DIR", CHART_DIR)
+
     if not os.path.isfile(in_path):
         raise SystemExit(f"[ERROR] analysis pack not found: {in_path}")
 
-    os.makedirs(CHART_DIR, exist_ok=True)
+    Path(chart_dir).mkdir(parents=True, exist_ok=True)
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+
     with open(in_path, "r", encoding="utf-8") as f:
         pack = json.load(f)
 
@@ -439,10 +545,10 @@ def main() -> None:
 
     plt.rcParams.update({"font.size": 10, "figure.titlesize": 12, "axes.titlesize": 12, "axes.labelsize": 10})
 
-    fig1 = os.path.join(CHART_DIR, "figure1_overall_donut.png")
-    fig2 = os.path.join(CHART_DIR, "figure2_noncompliance_share_hbar.png")
-    fig3 = os.path.join(CHART_DIR, "figure3_compliance_rate_hbar.png")
-    fig4 = os.path.join(CHART_DIR, "figure4_counts_stacked_hbar.png")
+    fig1 = os.path.join(chart_dir, "figure1_overall_donut.png")
+    fig2 = os.path.join(chart_dir, "figure2_noncompliance_share_hbar.png")
+    fig3 = os.path.join(chart_dir, "figure3_compliance_rate_hbar.png")
+    fig4 = os.path.join(chart_dir, "figure4_counts_stacked_hbar.png")
 
     applicable = int(metrics["applicable"])
     compliant = int(metrics["compliant"])

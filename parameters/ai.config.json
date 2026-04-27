@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "default_profile": "openai_default",
+  "default_profile": "lm_studio_local",
    "profiles": {
    "lm_studio_local": {
   "provider": "openai_compatible",
@@ -133,21 +133,21 @@
   },
   "tasks": {
   "ai_requirements_excel": {
-    "profile": "openai_default",
+    "profile": "lm_studio_local",
     "reasoning_effort": "low",
     "max_output_tokens": 3000,
     "batch_size": 10,
     "timeout_s": 300
   },
   "audit_summary_docx": {
-    "profile": "openai_default",
+    "profile": "lm_studio_local",
     "reasoning_effort": "medium",
     "max_output_tokens": 3000,
     "batch_size": 10,
     "timeout_s": 300
   },
   "ai_correlate": {
-    "profile": "openai_default",
+    "profile": "lm_studio_local",
     "reasoning_effort": "medium",
     "max_output_tokens": 3000,
     "batch_size": 10,

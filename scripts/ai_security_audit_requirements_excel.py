@@ -25,9 +25,54 @@ except Exception:
     BaseModel = None  # type: ignore
 
 
-FINGERPRINT_PATH = Path("/mnt/data/vision360_fingerprint.json")
-REQUISITES_PATH = Path("/mnt/data/requisites.json")
-OUTPUT_XLSX_PATH = Path("/mnt/data/security_audit_requirements.xlsx")
+def _first_nonempty_env(*names: str) -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _repo_root() -> Path:
+    # scripts/ai_security_audit_requirements_excel.py -> repository root
+    try:
+        return Path(__file__).resolve().parents[1]
+    except Exception:
+        return Path.cwd()
+
+
+def _resolve_data_dir() -> Path:
+    """Resolve a portable working data directory.
+
+    Priority:
+    1. Explicit project variables: VISION360_DATA_DIR, AUDIT_DATA_DIR, SECURITY_AUDIT_DATA_DIR.
+    2. GitHub Actions runner temp directory: RUNNER_TEMP/vision360-data.
+    3. Repository-local fallback: <repo>/.vision360-data.
+
+    This avoids binding the script to any operating-system-specific absolute path.
+    """
+    explicit = _first_nonempty_env("VISION360_DATA_DIR", "AUDIT_DATA_DIR", "SECURITY_AUDIT_DATA_DIR")
+    if explicit:
+        return Path(explicit).expanduser()
+
+    runner_temp = os.getenv("RUNNER_TEMP", "").strip()
+    if runner_temp:
+        return Path(runner_temp).expanduser() / "vision360-data"
+
+    return _repo_root() / ".vision360-data"
+
+
+def _resolve_path(env_name: str, default_filename: str) -> Path:
+    explicit = os.getenv(env_name, "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    return DATA_DIR / default_filename
+
+
+DATA_DIR = _resolve_data_dir()
+FINGERPRINT_PATH = _resolve_path("VISION360_FINGERPRINT_PATH", "vision360_fingerprint.json")
+REQUISITES_PATH = _resolve_path("REQUISITES_PATH", "requisites.json")
+OUTPUT_XLSX_PATH = _resolve_path("SECURITY_AUDIT_XLSX_PATH", "security_audit_requirements.xlsx")
 
 NEGATIVE_RISK_TOKENS = [
     "insecure", "unsafe", "weak", "debug", "debuggable", "cleartext", "allow_clear_text",
@@ -711,6 +756,15 @@ def deterministic_justification(req: RequirementAudit, flag_evidences: List[Flag
 
 def main() -> None:
     strict_english = env_bool("STRICT_ENGLISH_OUTPUT", True)
+
+    print(f"[PATH] DATA_DIR={DATA_DIR}", flush=True)
+    print(f"[PATH] FINGERPRINT_PATH={FINGERPRINT_PATH}", flush=True)
+    print(f"[PATH] REQUISITES_PATH={REQUISITES_PATH}", flush=True)
+    print(f"[PATH] OUTPUT_XLSX_PATH={OUTPUT_XLSX_PATH}", flush=True)
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_XLSX_PATH.parent.mkdir(parents=True, exist_ok=True)
+
     if not FINGERPRINT_PATH.exists():
         raise SystemExit(f"Missing required file: {FINGERPRINT_PATH}.")
     if not REQUISITES_PATH.exists():

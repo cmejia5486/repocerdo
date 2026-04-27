@@ -5,16 +5,52 @@ import json
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Any, Optional, List
 
 import pandas as pd
 
 
-DEFAULT_EXCEL = "/mnt/data/security_audit_requirements.xlsx"
 DEFAULT_SHEET = "audit"
-DEFAULT_OUT = "/mnt/data/audit_summary_analysis_pack.json"
 
 DEFAULT_CONFIG_ENV = "AUDIT_CONFIG_JSON_PATH"
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _runtime_data_dir() -> Path:
+    # Prefer explicit, cross-platform data-directory variables.
+    # If none are provided, use GitHub Actions RUNNER_TEMP when available.
+    # As a final local fallback, use a repository-local hidden directory.
+    for name in ("VISION360_DATA_DIR", "AUDIT_DATA_DIR", "SECURITY_AUDIT_DATA_DIR"):
+        raw = os.getenv(name, "").strip()
+        if raw:
+            base = Path(raw)
+            base.mkdir(parents=True, exist_ok=True)
+            return base
+
+    runner_temp = os.getenv("RUNNER_TEMP", "").strip()
+    if runner_temp:
+        base = Path(runner_temp) / "vision360-data"
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+
+    base = _repo_root() / ".vision360-data"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _env_path(env_name: str, default_filename: str) -> Path:
+    raw = os.getenv(env_name, "").strip()
+    if raw:
+        return Path(raw)
+    return _runtime_data_dir() / default_filename
+
+
+DEFAULT_EXCEL = str(_env_path("AUDIT_EXCEL_PATH", "security_audit_requirements.xlsx"))
+DEFAULT_OUT = str(_env_path("AUDIT_ANALYSIS_JSON_PATH", "audit_summary_analysis_pack.json"))
 
 
 def _candidate_config_paths() -> List[str]:
@@ -28,6 +64,7 @@ def _candidate_config_paths() -> List[str]:
     repo_root = os.path.dirname(script_dir)
     candidates.append(os.path.join(repo_root, "parameters", "config.json"))
     candidates.append(os.path.join(os.getcwd(), "parameters", "config.json"))
+    candidates.append(str(_runtime_data_dir() / "config.json"))
 
     out: List[str] = []
     seen = set()
@@ -419,6 +456,8 @@ def main() -> None:
             ],
         }
     }
+
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
 
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
