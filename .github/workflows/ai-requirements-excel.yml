@@ -26,18 +26,57 @@ jobs:
       AI_PYTHON_VERSION: ${{ vars.AI_PYTHON_VERSION }}
       AI_RUNTIME_DEBUG: ${{ vars.AI_RUNTIME_DEBUG }}
 
-      # Cross-platform runtime paths. These work on Windows, Linux and macOS runners.
-      VISION360_DATA_DIR: ${{ runner.temp }}/vision360-data
-      VISION360_BUNDLE_DIR: ${{ runner.temp }}/vision360-bundle
-      VISION360_FINGERPRINT_PATH: ${{ runner.temp }}/vision360-data/vision360_fingerprint.json
-      REQUISITES_PATH: ${{ runner.temp }}/vision360-data/requisites.json
-      SECURITY_AUDIT_XLSX_PATH: ${{ runner.temp }}/vision360-data/security_audit_requirements.xlsx
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Configure portable runtime paths on Windows
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $dataDir = Join-Path $env:RUNNER_TEMP "vision360-data"
+          $bundleDir = Join-Path $env:RUNNER_TEMP "vision360-bundle"
+          $fingerprintPath = Join-Path $dataDir "vision360_fingerprint.json"
+          $requisitesPath = Join-Path $dataDir "requisites.json"
+          $xlsxPath = Join-Path $dataDir "security_audit_requirements.xlsx"
+
+          "VISION360_DATA_DIR=$dataDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "VISION360_BUNDLE_DIR=$bundleDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "VISION360_FINGERPRINT_PATH=$fingerprintPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "REQUISITES_PATH=$requisitesPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "SECURITY_AUDIT_XLSX_PATH=$xlsxPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "[PATH] VISION360_DATA_DIR=$dataDir"
+          Write-Host "[PATH] VISION360_BUNDLE_DIR=$bundleDir"
+          Write-Host "[PATH] SECURITY_AUDIT_XLSX_PATH=$xlsxPath"
+
+      - name: Configure portable runtime paths on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          data_dir="$RUNNER_TEMP/vision360-data"
+          bundle_dir="$RUNNER_TEMP/vision360-bundle"
+          fingerprint_path="$data_dir/vision360_fingerprint.json"
+          requisites_path="$data_dir/requisites.json"
+          xlsx_path="$data_dir/security_audit_requirements.xlsx"
+
+          {
+            echo "VISION360_DATA_DIR=$data_dir"
+            echo "VISION360_BUNDLE_DIR=$bundle_dir"
+            echo "VISION360_FINGERPRINT_PATH=$fingerprint_path"
+            echo "REQUISITES_PATH=$requisites_path"
+            echo "SECURITY_AUDIT_XLSX_PATH=$xlsx_path"
+          } >> "$GITHUB_ENV"
+
+          echo "[PATH] VISION360_DATA_DIR=$data_dir"
+          echo "[PATH] VISION360_BUNDLE_DIR=$bundle_dir"
+          echo "[PATH] SECURITY_AUDIT_XLSX_PATH=$xlsx_path"
 
       - name: Verify Python launcher on Windows
         if: runner.os == 'Windows'
@@ -448,7 +487,7 @@ jobs:
         uses: actions/download-artifact@v6
         with:
           name: vision360-bundle
-          path: ${{ env.VISION360_BUNDLE_DIR }}
+          path: ${{ runner.temp }}/vision360-bundle
 
       - name: Ensure inputs at portable paths on Windows
         if: runner.os == 'Windows'
@@ -634,4 +673,4 @@ jobs:
         with:
           name: security-audit-excel
           if-no-files-found: error
-          path: ${{ env.SECURITY_AUDIT_XLSX_PATH }}
+          path: ${{ runner.temp }}/vision360-data/security_audit_requirements.xlsx
