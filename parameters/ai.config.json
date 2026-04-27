@@ -12,7 +12,7 @@
   "api_version": "",
   "api_version_env_var": "",
   "reasoning_effort": "",
-  "max_output_tokens": 500,
+  "max_output_tokens": 3000,
   "batch_size": 10,
   "timeout_s": 300,
   "temperature": 0,
@@ -135,21 +135,21 @@
   "ai_requirements_excel": {
     "profile": "lm_studio_local",
     "reasoning_effort": "",
-    "max_output_tokens": 500,
+    "max_output_tokens": 3000,
     "batch_size": 10,
     "timeout_s": 300
   },
   "audit_summary_docx": {
     "profile": "lm_studio_local",
     "reasoning_effort": "",
-    "max_output_tokens": 500,
+    "max_output_tokens": 3000,
     "batch_size": 10,
     "timeout_s": 300
   },
   "ai_correlate": {
     "profile": "lm_studio_local",
     "reasoning_effort": "",
-    "max_output_tokens": 500,
+    "max_output_tokens": 3000,
     "batch_size": 10,
     "timeout_s": 300
   }
