@@ -1,4 +1,4 @@
-name: Audit Summary (Stage 1 + Stage 2)
+name: Audit Summary Stage 1 and Stage 2
 
 on:
   workflow_call:
@@ -8,6 +8,7 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  PYTHONUNBUFFERED: "1"
 
 permissions:
   contents: read
@@ -15,7 +16,7 @@ permissions:
 
 jobs:
   audit_summary_analysis_pack:
-    name: Audit Summary Stage 1 -> analysis pack JSON
+    name: Audit Summary Stage 1 no AI -> analysis pack JSON
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -43,17 +44,18 @@ jobs:
           name: security-audit-excel
           path: /mnt/data
 
-      - name: Install dependencies stage 1
+      - name: Install dependencies for Stage 1 no AI
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           pip install --no-cache-dir pandas openpyxl
 
-      - name: Build analysis pack JSON
+      - name: Build analysis pack JSON no AI
         shell: bash
         run: |
           set -euo pipefail
+          echo "[NO-AI] Stage 1 builds audit_summary_analysis_pack.json from the Excel artifact."
           python scripts/audit_summary_stage1_build_analysis_pack.py
           test -f "/mnt/data/audit_summary_analysis_pack.json"
 
@@ -65,13 +67,21 @@ jobs:
           path: /mnt/data/audit_summary_analysis_pack.json
 
   audit_summary_docx:
-    name: Audit Summary Stage 2 -> DOCX PDF ZIP
+    name: Audit Summary Stage 2 uses AI -> DOCX
     needs: [audit_summary_analysis_pack]
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    runs-on: self-hosted
+    timeout-minutes: 120
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       AI_TASK: audit_summary_docx
+      AI_PROFILE: ${{ vars.AI_PROFILE }}
+      AI_PYTHON_VERSION: ${{ vars.AI_PYTHON_VERSION }}
+      AI_RUNTIME_DEBUG: ${{ vars.AI_RUNTIME_DEBUG }}
+      PYTHONUNBUFFERED: "1"
+      PYTHONNOUSERSITE: "1"
+      AUDIT_ANALYSIS_JSON_PATH: C:\mnt\data\audit_summary_analysis_pack.json
+      AUDIT_SUMMARY_DOCX_PATH: C:\mnt\data\Audit Summary.docx
+      MPLCONFIGDIR: C:\mnt\data\_matplotlib
 
     steps:
       - name: Checkout repository
@@ -79,17 +89,205 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
-      - name: Resolve AI config
-        shell: bash
+      - name: Verify Python launcher
+        shell: powershell
         run: |
-          set -euo pipefail
-          python scripts/resolve_ai_config.py --task "$AI_TASK" --github-env "$GITHUB_ENV"
+          $ErrorActionPreference = "Stop"
 
+          python --version
+          python -c "import sys; print(sys.executable)"
+
+          if (Get-Command py -ErrorAction SilentlyContinue) {
+            py --list
+          } else {
+            Write-Host "Python launcher 'py' not found. The workflow will use python from PATH."
+          }
+
+      - name: Create clean venv
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (Test-Path ".venv") {
+            Remove-Item -Recurse -Force ".venv"
+          }
+
+          $pythonVersion = ($env:AI_PYTHON_VERSION + "").Trim()
+
+          if (-not [string]::IsNullOrWhiteSpace($pythonVersion) -and (Get-Command py -ErrorAction SilentlyContinue)) {
+            Write-Host "Creating venv with Python $pythonVersion via Python launcher."
+            py -$pythonVersion -m venv .venv
+          } else {
+            Write-Host "Creating venv with default python from PATH."
+            python -m venv .venv
+          }
+
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          .\.venv\Scripts\python.exe --version
+          .\.venv\Scripts\python.exe -c "import sys; print(sys.executable)"
+
+      - name: Install dependencies for Stage 2 with AI
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          .\.venv\Scripts\python.exe -m pip install --no-cache-dir --force-reinstall -r requirements/ai-runtime.txt
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          .\.venv\Scripts\python.exe -m pip install --no-cache-dir pandas openpyxl python-docx matplotlib
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          .\.venv\Scripts\python.exe -m pip check
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Resolve AI config for Audit Summary
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "[AI] Resolving AI configuration for task: $env:AI_TASK"
+
+          .\.venv\Scripts\python.exe scripts/resolve_ai_config.py --task "$env:AI_TASK" --github-env "$env:GITHUB_ENV"
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Show resolved AI route
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "[AI] This job uses AI in the DOCX generation step."
+          Write-Host "[AI] AI_TASK=$env:AI_TASK"
+          Write-Host "[AI] AI_PROFILE=$env:AI_PROFILE"
+          Write-Host "[AI] AI_PROVIDER=$env:AI_PROVIDER"
+          Write-Host "[AI] AI_MODEL=$env:AI_MODEL"
+          Write-Host "[AI] AI_LITELLM_MODEL=$env:AI_LITELLM_MODEL"
+          Write-Host "[AI] AI_API_BASE=$env:AI_API_BASE"
+          Write-Host "[AI] AI_MAX_OUTPUT_TOKENS=$env:AI_MAX_OUTPUT_TOKENS"
+          Write-Host "[AI] AI_BATCH_SIZE=$env:AI_BATCH_SIZE"
+          Write-Host "[AI] AI_TIMEOUT_S=$env:AI_TIMEOUT_S"
+          Write-Host "[AI] AI_KEY_PRESENT=$env:AI_KEY_PRESENT"
+
+          if ([string]::IsNullOrWhiteSpace($env:OPENAI_API_KEY)) {
+            throw "OPENAI_API_KEY is empty."
+          }
+
+          if (-not [string]::IsNullOrWhiteSpace($env:AI_API_BASE)) {
+            $modelsUrl = $env:AI_API_BASE.TrimEnd('/') + "/models"
+            Write-Host "[AI] Testing AI endpoint from resolved configuration: $modelsUrl"
+
+            $headers = @{}
+            $headers["Authorization"] = "Bearer $env:OPENAI_API_KEY"
+
+            Invoke-RestMethod -Uri $modelsUrl -Headers $headers -Method Get -TimeoutSec 30 | ConvertTo-Json -Depth 10
+          } else {
+            Write-Host "[AI] AI_API_BASE is empty. Assuming cloud provider or provider default endpoint."
+          }
+
+      - name: Verify AI runtime route
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $env:PYTHONPATH = Join-Path $PWD "scripts"
+
+          $py = @'
+          from lib.ai_runtime import AIRuntime, OpenAI, completion
+
+          rt = AIRuntime(task="audit_summary_docx")
+
+          print("[AI_RUNTIME] provider:", rt.provider)
+          print("[AI_RUNTIME] model:", rt.model)
+          print("[AI_RUNTIME] litellm_model:", getattr(rt, "litellm_model", "n/a"))
+          print("[AI_RUNTIME] api_base:", rt.api_base)
+          print("[AI_RUNTIME] OpenAI SDK available:", OpenAI is not None)
+          print("[AI_RUNTIME] LiteLLM available:", completion is not None)
+          print("[AI_RUNTIME] uses direct OpenAI route:", rt._use_direct_openai())
+
+          if rt.provider == "openai_compatible" and not rt._use_direct_openai():
+              raise SystemExit("openai_compatible provider must use direct OpenAI SDK route")
+          '@
+
+          $py | .\.venv\Scripts\python.exe -
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Prepare data dir
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          New-Item -ItemType Directory -Force -Path C:\mnt\data | Out-Null
+          New-Item -ItemType Directory -Force -Path C:\mnt\data\_matplotlib | Out-Null
+
+          if (Test-Path "C:\mnt\data\Audit Summary.docx") {
+            Remove-Item -Force "C:\mnt\data\Audit Summary.docx"
+          }
+
+      - name: Download analysis pack artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: audit-summary-analysis-pack
+          path: C:\mnt\data
+
+      - name: Download security-audit-excel artifact for trace reference
+        uses: actions/download-artifact@v6
+        with:
+          name: security-audit-excel
+          path: C:\mnt\data
+
+      - name: Generate Audit Summary DOCX using AI
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "[AI] Starting AI-assisted Audit Summary DOCX generation."
+          Write-Host "[AI] Script: scripts/audit_summary_stage2_generate_docx.py"
+          Write-Host "[AI] Task: $env:AI_TASK"
+          Write-Host "[AI] Provider: $env:AI_PROVIDER"
+          Write-Host "[AI] Model: $env:AI_MODEL"
+
+          .\.venv\Scripts\python.exe scripts/audit_summary_stage2_generate_docx.py
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          if (-not (Test-Path "C:\mnt\data\Audit Summary.docx")) {
+            throw "Audit Summary.docx was not created"
+          }
+
+          Write-Host "[AI] Audit Summary DOCX generated successfully."
+
+      - name: Upload Audit Summary DOCX artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: audit-summary-docx
+          if-no-files-found: error
+          path: C:\mnt\data\Audit Summary.docx
+
+  audit_summary_pdf_zip:
+    name: Audit Summary Stage 3 no AI -> PDF ZIP
+    needs: [audit_summary_docx]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
       - name: Prepare /mnt/data
         shell: bash
         run: |
@@ -97,36 +295,11 @@ jobs:
           sudo mkdir -p /mnt/data
           sudo chmod 777 /mnt/data
 
-      - name: Download analysis pack artifact
+      - name: Download Audit Summary DOCX artifact
         uses: actions/download-artifact@v6
         with:
-          name: audit-summary-analysis-pack
+          name: audit-summary-docx
           path: /mnt/data
-
-      - name: Download security-audit-excel artifact for trace reference
-        uses: actions/download-artifact@v6
-        with:
-          name: security-audit-excel
-          path: /mnt/data
-
-      - name: Install dependencies stage 2
-        shell: bash
-        env:
-          MPLCONFIGDIR: /tmp/matplotlib
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          pip install --no-cache-dir pandas openpyxl python-docx matplotlib litellm
-          mkdir -p /tmp/matplotlib
-
-      - name: Generate Audit Summary DOCX
-        shell: bash
-        env:
-          MPLCONFIGDIR: /tmp/matplotlib
-        run: |
-          set -euo pipefail
-          python scripts/audit_summary_stage2_generate_docx.py
-          test -f "/mnt/data/Audit Summary.docx"
 
       - name: Install LibreOffice and zip
         shell: bash
@@ -158,3 +331,4 @@ jobs:
           path: |
             /mnt/data/Audit Summary.docx
             /mnt/data/Audit Summary.pdf
+            /mnt/data/audit-summary-bundle.zip
