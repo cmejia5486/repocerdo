@@ -365,6 +365,102 @@ def env_bool(name: str, default: bool) -> bool:
     return default
 
 
+def is_local_openai_compatible_endpoint() -> bool:
+    api_base = (
+        os.getenv("AI_API_BASE", "")
+        or os.getenv("OPENAI_API_BASE", "")
+        or os.getenv("AI_COMPAT_BASE_URL", "")
+    ).strip().lower()
+    return bool(api_base) and any(
+        host in api_base
+        for host in ("localhost", "127.0.0.1", "host.docker.internal")
+    )
+
+
+def should_use_structured_parse(client: Any) -> bool:
+    # LM Studio and other local OpenAI-compatible servers often expose enough
+    # surface for the SDK call to exist, but they do not reliably return the
+    # same structured-output envelope expected by client.responses.parse.
+    # For local endpoints, use plain text generation and parse JSON ourselves.
+    return hasattr(client.responses, "parse") and not is_local_openai_compatible_endpoint()
+
+
+def extract_json_object_from_model_output(text: str) -> Dict[str, Any]:
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Model returned empty text")
+
+    # Direct JSON.
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+
+    # JSON inside Markdown fence.
+    fenced = re.search(
+        r"```(?:json)?\s*(\{.*?\})\s*```",
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if fenced:
+        obj = json.loads(fenced.group(1))
+        if isinstance(obj, dict):
+            return obj
+
+    # Remove common fence wrappers if the model used an unterminated fence.
+    cleaned = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    try:
+        obj = json.loads(cleaned)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+
+    # Find the first balanced JSON object anywhere in the output.
+    start = text.find("{")
+    if start < 0:
+        preview = text[:500].replace("\n", "\\n")
+        raise ValueError(f"No JSON object found in model output. Preview: {preview}")
+
+    depth = 0
+    in_string = False
+    escape = False
+
+    for i in range(start, len(text)):
+        ch = text[i]
+
+        if escape:
+            escape = False
+            continue
+
+        if ch == "\\":
+            escape = True
+            continue
+
+        if ch == '"':
+            in_string = not in_string
+            continue
+
+        if in_string:
+            continue
+
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = text[start:i + 1]
+                obj = json.loads(candidate)
+                if isinstance(obj, dict):
+                    return obj
+
+    preview = text[:500].replace("\n", "\\n")
+    raise ValueError(f"No complete JSON object found in model output. Preview: {preview}")
+
+
 def _normalize_typography(s: str) -> str:
     repl = {"\u2018": "'", "\u2019": "'", "\u201C": '"', "\u201D": '"', "\u2013": "-", "\u2014": "-", "\u00A0": " "}
     return "".join(repl.get(ch, ch) for ch in s)
@@ -393,7 +489,7 @@ def translate_texts_to_english_via_openai(items: List[Dict[str, str]]) -> Dict[s
     model = os.getenv("OPENAI_MODEL", "gpt-5.4").strip() or "gpt-5.4"
     effort = os.getenv("OPENAI_REASONING_EFFORT", "medium").strip() or "medium"
     max_tokens = env_int("OPENAI_MAX_OUTPUT_TOKENS", 2000)
-    supports_parse = hasattr(client.responses, "parse")
+    supports_parse = should_use_structured_parse(client)
 
     class TranslationItem(BaseModel):
         id: str
@@ -408,6 +504,8 @@ def translate_texts_to_english_via_openai(items: List[Dict[str, str]]) -> Dict[s
         "- Output English only.\n"
         "- Preserve meaning. Do not add new requirements.\n"
         "- Keep the translation concise and professional.\n"
+        "- Do not use Markdown, code fences, prose, bullet points, comments, or tool calls.\n"
+        "- Return exactly one raw JSON object and nothing else.\n"
         "- Return ONLY JSON in the form: {\"items\": [{\"id\": \"...\", \"text_en\": \"...\"}, ...]}.\n"
     )
     user_payload = {"items": items}
@@ -432,10 +530,7 @@ def translate_texts_to_english_via_openai(items: List[Dict[str, str]]) -> Dict[s
                 reasoning={"effort": effort},
             )
             txt = (getattr(resp, "output_text", "") or "").strip()
-            m = re.search(r"\{.*\}\s*$", txt, flags=re.DOTALL)
-            if not m:
-                raise ValueError("No valid JSON object found in model response.")
-            obj = json.loads(m.group(0))
+            obj = extract_json_object_from_model_output(txt)
             out: Dict[str, str] = {}
             for it in obj.get("items", []):
                 if isinstance(it, dict) and "id" in it and "text_en" in it:
@@ -460,7 +555,7 @@ def generate_justifications_via_openai(batch_ctx: List[Dict[str, Any]]) -> Dict[
     model = os.getenv("OPENAI_MODEL", "gpt-5.4").strip() or "gpt-5.4"
     effort = os.getenv("OPENAI_REASONING_EFFORT", "medium").strip() or "medium"
     max_tokens = env_int("OPENAI_MAX_OUTPUT_TOKENS", 2000)
-    supports_parse = hasattr(client.responses, "parse")
+    supports_parse = should_use_structured_parse(client)
 
     class JustificationItem(BaseModel):
         id: str
@@ -484,6 +579,8 @@ def generate_justifications_via_openai(batch_ctx: List[Dict[str, Any]]) -> Dict[
         "- Mention state, normalized summary (YES/NO/NA), relevant note hint, and evidence_count when available.\n"
         "- If a flag is not present in the fingerprint, state: 'flag not present in fingerprint'.\n"
         "- Do not change the precomputed result.\n"
+        "- Do not use Markdown, code fences, prose, bullet points, comments, or tool calls.\n"
+        "- Return exactly one raw JSON object and nothing else.\n"
         "- Return ONLY JSON in the form: {\"items\": [{\"id\": \"...\", \"justification\": \"...\"}, ...]}.\n"
     )
     user_payload = {"batch": batch_ctx}
@@ -491,7 +588,8 @@ def generate_justifications_via_openai(batch_ctx: List[Dict[str, Any]]) -> Dict[
     print(
         f"[AI] Justification request prepared: items={len(batch_ctx)} "
         f"| ids={','.join(ids[:5])}{'...' if len(ids) > 5 else ''} "
-        f"| model={model} | max_tokens={max_tokens} | parse={supports_parse}",
+        f"| model={model} | max_tokens={max_tokens} | parse={supports_parse} "
+        f"| local_endpoint={is_local_openai_compatible_endpoint()}",
         flush=True,
     )
 
@@ -535,16 +633,13 @@ def generate_justifications_via_openai(batch_ctx: List[Dict[str, Any]]) -> Dict[
                 reasoning={"effort": effort},
             )
             txt = (getattr(resp, "output_text", "") or "").strip()
-            m = re.search(r"\{.*\}\s*$", txt, flags=re.DOTALL)
-            if not m:
-                raise ValueError("No valid JSON object found in model response.")
-            obj = json.loads(m.group(0))
+            obj = extract_json_object_from_model_output(txt)
             out: Dict[str, str] = {}
             for it in obj.get("items", []):
                 if isinstance(it, dict) and "id" in it and "justification" in it:
                     out[str(it["id"])] = str(it.get("justification") or "").strip()
             print(
-                f"[AI] Justification attempt {attempt}/3 succeeded via JSON extraction: "
+                f"[AI] Justification attempt {attempt}/3 succeeded via robust JSON extraction: "
                 f"received={len(out)}/{len(batch_ctx)} "
                 f"| elapsed={time.time() - attempt_started_at:.1f}s",
                 flush=True,
@@ -560,7 +655,12 @@ def generate_justifications_via_openai(batch_ctx: List[Dict[str, Any]]) -> Dict[
             )
             time.sleep(0.6 * attempt)
 
-    print(f"[WARN] AI justification generation failed after retries: {last_err}", file=sys.stderr, flush=True)
+    print(
+        f"[WARN] AI justification generation failed after retries: {last_err}; "
+        "deterministic fallback will be used for this batch.",
+        file=sys.stderr,
+        flush=True,
+    )
     return {}
 
 def deterministic_justification(req: RequirementAudit, flag_evidences: List[FlagEvidence], meta: Dict[str, Any]) -> str:
