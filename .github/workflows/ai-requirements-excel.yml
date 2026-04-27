@@ -183,7 +183,7 @@ jobs:
             )
 
             for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
-              Write-Host "[PIP] Attempt $attempt/$MaxAttempts: python -m pip $($ArgsToPass -join ' ')"
+              Write-Host ("[PIP] Attempt {0}/{1}: python -m pip {2}" -f $attempt, $MaxAttempts, ($ArgsToPass -join ' '))
               & $env:PYTHON_EXE -m pip @ArgsToPass
 
               if ($LASTEXITCODE -eq 0) {
@@ -197,7 +197,7 @@ jobs:
               }
             }
 
-            throw "pip failed after $MaxAttempts attempts: $($ArgsToPass -join ' ')"
+            throw ("pip failed after {0} attempts: {1}" -f $MaxAttempts, ($ArgsToPass -join ' '))
           }
 
           Invoke-Pip -ArgsToPass @("--retries", "10", "--timeout", "120", "install", "--upgrade", "pip")

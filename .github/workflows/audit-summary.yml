@@ -257,7 +257,7 @@ jobs:
             )
 
             for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
-              Write-Host "[PIP] Attempt $attempt/$MaxAttempts: python -m pip $($PipArgs -join ' ')"
+              Write-Host ("[PIP] Attempt {0}/{1}: python -m pip {2}" -f $attempt, $MaxAttempts, ($PipArgs -join ' '))
 
               & $env:PYTHON_EXE -m pip @PipArgs
 
@@ -272,7 +272,7 @@ jobs:
               }
             }
 
-            throw "pip install failed after $MaxAttempts attempts: $($PipArgs -join ' ')"
+            throw ("pip install failed after {0} attempts: {1}" -f $MaxAttempts, ($PipArgs -join ' '))
           }
 
           Invoke-PipInstall -PipArgs @(
